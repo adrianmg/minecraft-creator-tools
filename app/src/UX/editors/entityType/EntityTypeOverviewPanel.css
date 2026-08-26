@@ -11,6 +11,7 @@
   --etop-bg: #262423;
   --etop-panel-bg: #2a2a2a;
   --etop-text: #e0e0e0;
+  --etop-text-dark: #262423;
   --etop-text-muted: #a39895;
   --etop-border: #4a4543;
   --etop-link: #86d562;
@@ -25,7 +26,7 @@
   --etop-text: #333333;
   --etop-text-muted: #6b6562;
   --etop-border: #d4ccc9;
-  --etop-link: #3e8828;
+  --etop-link: #2a641c;
   --etop-chip-bg: #ede5e2;
   --etop-row-hover: rgba(0, 0, 0, 0.03);
   --etop-icon-bg: #d4ccc9;
@@ -82,13 +83,23 @@
   object-fit: cover;
 }
 
-.etop-modelHint {
+.etop-modelHint-dark {
   flex: 0 0 auto;
   text-align: center;
   font-size: 11px;
   opacity: 0.5;
   padding: 2px 0;
   letter-spacing: 0.3px;
+}
+
+.etop-modelHint {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: 11px;
+  opacity: 1;
+  padding: 2px 0;
+  letter-spacing: 0.3px;
+  color: #484543;
 }
 
 /* Behaviors section - below model, scrollable */
@@ -168,6 +179,16 @@
 
 .etop-groupLink {
   font-size: 11px;
+  color: #ffffff;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--etop-link);
+  background-color: var(--etop-link);
+}
+
+.etop-groupLink-dark {
+  font-size: 11px;
   color: var(--etop-link);
   font-weight: 600;
   padding: 2px 8px;
@@ -221,6 +242,19 @@
   box-sizing: border-box;
 }
 
+.etop-componentText-dark {
+  flex: 1;
+  font-size: 12px;
+  color: var(--etop-text);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 .etop-componentText {
   flex: 1;
   font-size: 12px;
@@ -229,11 +263,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
+  line-clamp: 2;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
 
 .etop-componentRawId {
+  font-family: "Fira Code", "Consolas", "Menlo", monospace;
+  font-size: 10px;
+  opacity: 1;
+  margin-left: 6px;
+  white-space: nowrap;
+  color: var(etop-text-dark);
+}
+
+.etop-componentRawId-dark {
   font-family: "Fira Code", "Consolas", "Menlo", monospace;
   font-size: 10px;
   opacity: 0.55;

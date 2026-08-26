@@ -293,7 +293,7 @@ class EntityTypeOverviewPanel extends Component<IEntityTypeOverviewPanelProps, I
     this.props.onNavigateToComponent(groupId, componentId);
   }
 
-  _renderComponentList(components: IComponentSummary[], groupId: string) {
+  _renderComponentList(components: IComponentSummary[], groupId: string, isDark: boolean) {
     if (components.length === 0) {
       return (
         <div className="etop-componentList">
@@ -326,7 +326,7 @@ class EntityTypeOverviewPanel extends Component<IEntityTypeOverviewPanelProps, I
             <div className="etop-componentIcon" style={{ "--slot-color": comp.slotColor } as React.CSSProperties}>
               <ComponentIcon componentId={comp.componentId} size={20} />
             </div>
-            <span className="etop-componentText">
+            <span className={isDark ? "etop-componentText-dark " : "etop-componentText"}>
               {comp.summary ? (
                 <>
                   <strong>{comp.displayName}:</strong> {comp.summary}
@@ -335,7 +335,7 @@ class EntityTypeOverviewPanel extends Component<IEntityTypeOverviewPanelProps, I
                 comp.displayName
               )}
               {comp.displayName !== comp.componentId && (
-                <span className="etop-componentRawId"> {comp.componentId}</span>
+                <span className={isDark ? "etop-componentRawId-dark" : "etop-componentRawId"}> {comp.componentId}</span>
               )}
             </span>
           </div>
@@ -344,7 +344,7 @@ class EntityTypeOverviewPanel extends Component<IEntityTypeOverviewPanelProps, I
     );
   }
 
-  _renderComponentGroup(group: IComponentGroupSummary) {
+  _renderComponentGroup(group: IComponentGroupSummary, isDark: boolean) {
     return (
       <div key={group.groupId} className="etop-componentGroupSection">
         <h3 className="etop-groupHeading">
@@ -366,11 +366,11 @@ class EntityTypeOverviewPanel extends Component<IEntityTypeOverviewPanelProps, I
               className="etop-groupLink"
               title={this.props.intl.formatMessage({ id: "project_editor.entity_overview.edit_state_tooltip" })}
             >
-              {this.props.intl.formatMessage({ id: "project_editor.entity_overview.edit_state" })}
+              foo: {this.props.intl.formatMessage({ id: "project_editor.entity_overview.edit_state" })}
             </span>
           </div>
         </h3>
-        {this._renderComponentList(group.components, group.groupId)}
+        {this._renderComponentList(group.components, group.groupId, isDark)}
       </div>
     );
   }
@@ -439,7 +439,7 @@ class EntityTypeOverviewPanel extends Component<IEntityTypeOverviewPanelProps, I
                 that focusable canvas from the accessibility tree, hiding the
                 control from assistive technology and keyboard users (WCAG 2.1.1). */}
             <div className="etop-modelViewer">{modelViewerContent}</div>
-            <div className="etop-modelHint">
+            <div className={isDark ? "etop-modelHint-dark" : "etop-modelHint"}>
               {this.props.intl.formatMessage({ id: "project_editor.entity_overview.drag_hint" })}
             </div>
           </EditorContentPanel>
@@ -525,18 +525,18 @@ class EntityTypeOverviewPanel extends Component<IEntityTypeOverviewPanelProps, I
                       {this.props.intl.formatMessage({ id: "project_editor.entity_overview.base_behaviors" })}
                     </span>
                     <span
-                      className="etop-groupLink"
+                      className={isDark ? "etop-groupLink-dark" : "etop-groupLink"}
                       title={this.props.intl.formatMessage({ id: "project_editor.entity_overview.edit_base" })}
                     >
                       {this.props.intl.formatMessage({ id: "common.edit" })}
                     </span>
                   </div>
                 </h3>
-                {this._renderComponentList(this.state.defaultComponents, "default")}
+                {this._renderComponentList(this.state.defaultComponents, "default", isDark)}
               </div>
 
               {/* Optional variant states */}
-              {this.state.componentGroups.map((group) => this._renderComponentGroup(group))}
+              {this.state.componentGroups.map((group) => this._renderComponentGroup(group, isDark))}
             </div>
           </EditorContentPanel>
         </div>

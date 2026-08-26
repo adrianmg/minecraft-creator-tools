@@ -130,14 +130,21 @@ const VANILLA_GEOMETRY_TRANSFORMS: IVanillaGeometryTransform[] = [
   //   v1.0:  body pivot [0,12,-10], cube [-2,-7,-18], bind_pose_rotation [90,0,0]
   //   v1.8:  body pivot [0,7,1],    cube [-2,-1,-2],  NO rotation
   //
-  // All child bones (head, legs, tail) already have correct world-space
-  // positions — only the body cube needs rotation.  Tail cubes are vertical
-  // at rest; the curve comes from animation, not static geometry.
+  // The head and leg bones already have correct world-space positions, but the
+  // tail segments are modeled as upright columns in the same "vertical" convention
+  // as the body, so they need the same 90° X rotation (see the tail transforms
+  // below) — otherwise the tail renders as a pole standing behind the cat.
   {
     geometryPatterns: ["geometry.cat", "geometry.ocelot.v1.8"],
     reason: "Body cube modeled vertically [4,16,6] — Minecraft hardcodes per-cube 90° X rotation (matches cow.v2 convention)",
     boneTransforms: [
       { boneName: "body", setCubeRotation: [90, 0, 0] },
+      // The tail segments are modeled as upright columns in the same convention as
+      // the body (they curl via animation in game). Without the matching 90° X the
+      // tail renders as a vertical pole standing behind the cat. Rotate each segment
+      // about its own bone pivot so the tail lies back along the body.
+      { boneName: "tail1", setCubeRotation: [90, 0, 0] },
+      { boneName: "tail2", setCubeRotation: [90, 0, 0] },
     ],
   },
 

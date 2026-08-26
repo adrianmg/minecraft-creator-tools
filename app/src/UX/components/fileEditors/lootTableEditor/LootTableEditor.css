@@ -1,0 +1,23 @@
+/* Advanced (schema) loot table editor sizing.
+
+   Mirrors the reflow-gated pin in LootTableVisualEditor.css. Above the reflow
+   breakpoint the editor pins to the viewport minus the app-chrome offset
+   (published via --lte-height-offset by the component) so the schema form
+   scrolls internally instead of growing past the bottom of the screen. Below
+   it — narrow/short (zoomed) viewports, e.g. 320×256 at 400% zoom, where the
+   toolbar + expanded status offsets can meet or exceed 100vh — an unconditional
+   calc(100vh - offset) would clamp the form to zero height, so there it falls
+   back to height:100% (→ auto): the form grows and the hosting editor column
+   (.pe-col2 / .pe-col3and4 in ProjectEditor.css, which switches to
+   overflow-y:auto below the same breakpoint) becomes the scroll container that
+   makes the grown content reachable (WCAG 1.4.10 Reflow). 481px matches the
+   narrow-layout breakpoint in LootTableVisualEditor.css / ProjectEditor.css. */
+.lte-advanced-flex {
+  height: 100%;
+}
+
+@media only screen and (min-width: 481px) and (min-height: 481px) {
+  .lte-advanced-flex-pinned {
+    height: calc(100vh - var(--lte-height-offset, 0px));
+  }
+}

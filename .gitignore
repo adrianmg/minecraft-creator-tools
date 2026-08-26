@@ -48,7 +48,6 @@ dist/
 mci/
 mch/
 _reports/
-/app/forge.config.js
 .vscode-test-web/
 node_modules/
 app/public/data/typedefs.*.json

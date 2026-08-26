@@ -22,5 +22,8 @@
     "@minecraft/server": "1.5.0",
     "@minecraft/server-ui": "1.1.0",
     "decode-uri-component": "0.2.2"
+  },
+  "overrides": {
+    "brace-expansion@1": "1.1.16"
   }
 }

@@ -22,16 +22,17 @@
 // isolation triggers "Class extends value undefined". Other standalone tests do the same.
 import "../app/CreatorTools";
 import { expect } from "chai";
-import JSZip from "jszip";
 import SecurityUtilities from "../core/SecurityUtilities";
 import ZipStorage from "../storage/ZipStorage";
 import ZipImportError, { ZipImportErrorCode } from "../storage/ZipImportError";
+import { buildSizeSpoofedZip, SpoofedZipEntry } from "./ZipFixtures";
 
 const MB = 1024 * 1024;
 
 describe("Zip import size handling", function () {
-  // The end-to-end cases build/compress buffers at the real 500 MiB limit, so allow ample time.
-  this.timeout(120000);
+  // Fixtures are compact (sizes are declared in zip metadata, not materialized), so these run
+  // fast; the timeout mainly covers first-time module/graph initialization.
+  this.timeout(30000);
 
   describe("SecurityUtilities.isContentPath", () => {
     it("recognizes top-level Content/ files", () => {
@@ -125,19 +126,48 @@ describe("Zip import size handling", function () {
       expect(ZipImportError.is(err)).to.equal(true);
       expect(ZipImportError.is(new Error("plain"))).to.equal(false);
     });
+
+    it("pins the externally consumed wire values (changing any of these is a breaking API change)", () => {
+      // These strings are serialized over /api/validate and switched on by external clients
+      // (notably Auger). Assert the LITERALS — not enum-to-enum — so a rename of a wire value
+      // fails loudly here instead of silently moving producer and assertion together, which is
+      // exactly what an enum-based assertion elsewhere (e.g. the ServerCommandLineTest HTTP
+      // suites) cannot catch on its own.
+      expect(ZipImportErrorCode.contentSizeExceeded).to.equal("CONTENT_SIZE_EXCEEDED");
+      expect(ZipImportErrorCode.packageSizeExceeded).to.equal("PACKAGE_SIZE_EXCEEDED");
+      expect(ZipImportErrorCode.uploadTooLarge).to.equal("ZIP_UPLOAD_TOO_LARGE");
+      expect(ZipImportErrorCode.tooManyFiles).to.equal("ZIP_TOO_MANY_FILES");
+      expect(ZipImportErrorCode.invalidPath).to.equal("ZIP_INVALID_PATH");
+
+      // String enums have no reverse mappings, so this count guards against a NEW code being
+      // added without a corresponding literal pin above.
+      expect(Object.keys(ZipImportErrorCode).length).to.equal(5);
+    });
   });
 
   describe("ZipStorage.loadFromUint8Array (end-to-end small zips)", () => {
-    async function buildZip(files: { path: string; size: number }[]): Promise<Uint8Array> {
-      const jsz = new JSZip();
+    // Entries at or below this size are materialized as REAL bytes, so the positive-path
+    // fixtures are fully valid archives whose contents can be read back (JSZip verifies the
+    // declared uncompressed size when an entry is actually decompressed). Only sizes above
+    // this threshold are merely DECLARED in the central directory (see ZipFixtures), keeping
+    // the 500 MiB cases a few hundred bytes without compressing or allocating large buffers —
+    // the guard reads that declared metadata before any decompression happens.
+    const REAL_DATA_MAX = 4096;
 
-      for (const f of files) {
-        // Use zero-filled buffers; uncompressedSize metadata reflects the real (large)
-        // size while DEFLATE keeps the compressed payload tiny.
-        jsz.file(f.path, new Uint8Array(f.size));
+    function fixtureBytes(size: number): Uint8Array {
+      const bytes = new Uint8Array(size);
+      for (let i = 0; i < size; i++) {
+        bytes[i] = 0x41 + (i % 26); // deterministic A..Z pattern; text-friendly for .json/.md reads
       }
+      return bytes;
+    }
 
-      return await jsz.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+    async function buildZip(files: { path: string; size: number }[]): Promise<Uint8Array> {
+      const entries: SpoofedZipEntry[] = files.map((f) =>
+        f.size <= REAL_DATA_MAX ? { path: f.path, data: fixtureBytes(f.size) } : { path: f.path, declaredSize: f.size }
+      );
+
+      return buildSizeSpoofedZip(entries);
     }
 
     it("imports a small package with a Content/ file", async () => {
@@ -151,11 +181,17 @@ describe("Zip import size handling", function () {
 
       const contentFolder = zs.rootFolder.ensureFolder("Content");
       expect(await contentFolder.exists()).to.equal(true);
+
+      // Read the entry's bytes back to prove the fixture is a VALID archive (JSZip checks the
+      // declared uncompressed size on read, so a spoofed small entry would fail here).
+      const manifestFile = await zs.rootFolder.ensureFileFromRelativePath("/Content/world_template/manifest.json");
+      await manifestFile.loadContent();
+      expect((manifestFile.content as string).length).to.equal(64);
     });
 
     it("throws a content-size error when Content/ exceeds the content limit", async () => {
-      // Build a zip whose Content/ uncompressedSize exceeds 500 MiB using a highly
-      // compressible (zero-filled) buffer so the test stays fast and low-memory on disk.
+      // Build a compact zip whose Content/ entry DECLARES an uncompressed size just over 500 MiB
+      // (no large buffer is materialized), so the guard trips fast and low-memory.
       const data = await buildZip([{ path: "Content/big.bin", size: SecurityUtilities.MAX_CONTENT_DECOMPRESSED_SIZE + 1 }]);
 
       const zs = new ZipStorage();
@@ -185,6 +221,12 @@ describe("Zip import size handling", function () {
 
       const contentFolder = zs.rootFolder.ensureFolder("Content");
       expect(await contentFolder.exists()).to.equal(true);
+
+      // The small Content/ entry is real data and must read back intact; only the oversized
+      // non-Content entry uses a declared (spoofed) size.
+      const smallFile = await zs.rootFolder.ensureFileFromRelativePath("/Content/small.json");
+      await smallFile.loadContent();
+      expect((smallFile.content as string).length).to.equal(32);
     });
   });
 });

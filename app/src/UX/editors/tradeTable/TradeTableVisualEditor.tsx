@@ -292,12 +292,18 @@ export default class TradeTableVisualEditor extends Component<
       return <div className="ttve-loading">Loading trade table...</div>;
     }
 
-    const containerStyle: React.CSSProperties = {
-      height: this.props.heightOffset !== undefined ? `calc(100vh - ${this.props.heightOffset}px)` : "100%",
-    };
+    // Publish the app-chrome offset as a CSS variable; TradeTableVisualEditor.css
+    // viewport-pins the container with it only above the reflow breakpoint. At
+    // narrow/short (zoomed) viewports the offsets can exceed 100vh — an inline
+    // calc(100vh - offset) would clamp the editor to zero height — so there the
+    // container falls back to growing with its content (WCAG 1.4.10 Reflow).
+    const hasHeightOffset = this.props.heightOffset !== undefined;
+    const containerStyle = hasHeightOffset
+      ? ({ "--ttve-height-offset": `${this.props.heightOffset}px` } as React.CSSProperties)
+      : undefined;
 
     return (
-      <div className="ttve-container" style={containerStyle}>
+      <div className={"ttve-container" + (hasHeightOffset ? " ttve-container-pinned" : "")} style={containerStyle}>
         {error && (
           <Alert severity="error" className="ttve-error">
             {error}

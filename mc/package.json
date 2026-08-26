@@ -41,6 +41,16 @@
     },
     "@minecraft/server-ui": {
       "@minecraft/server": "$@minecraft/server"
-    }
+    },
+    "brace-expansion@1": "1.1.16",
+    "brace-expansion@2": "2.1.3",
+    "brace-expansion@5": "5.0.8",
+    "fast-uri": "3.1.4",
+    "postcss": "8.5.22"
+  },
+  "overridesNotes": {
+    "_comment": "package.json is strict JSON and cannot hold inline comments; this npm-ignored key documents non-obvious overrides so a future dependency refresh does not silently drop or downgrade them.",
+    "brace-expansion": "The @1/@2/@5 pins (1.1.16 / 2.1.3 / 5.0.8) are each the LATEST published release in their major; 2.1.3 / 5.0.8 CLOSE GHSA-mh99-v99m-4gvg / CVE-2026-14257 for the 2.x and 5.x majors. KNOWN-UNRESOLVED and tracked: the successor GHSA-rgw5-rvv9-x895 (High, published 2026-08-03) bypasses that fix and affects all three pinned versions; its fixes (1.1.18 / 2.1.4 / 5.0.9) are NOT yet published to npm as of 2026-08-04, so no released-version pin can close it. Bump every pin (here plus app/, samplecontent/addon, samplecontent/world, toexternal/app) and regenerate all lockfiles once they publish. See app/package.json overridesNotes for the full rationale.",
+    "postcss": "Pinned to 8.5.22 to clear GHSA-r28c-9q8g-f849 (High, CVSS 7.5 path traversal via automatic previous-source-map loading; all versions through 8.5.17 are affected, patched in 8.5.18). postcss is a dev-only transitive of vite. This exact pin acts as the patched floor: npm cannot resolve the tree below it, so a future security refresh cannot silently stop below 8.5.18. Keep this at or above 8.5.18 when bumping."
   }
 }

@@ -38,7 +38,7 @@
     "@types/json-schema": "7.0.15",
     "@types/react-syntax-highlighter": "15.5.13",
     "@xyflow/react": "12.8.2",
-    "axios": "1.15.0",
+    "axios": "1.18.0",
     "babylonjs": "8.36.0",
     "babylonjs-gui": "8.36.0",
     "blockly": "12.0.0",
@@ -78,11 +78,11 @@
     "remark-gfm": "3.0.1",
     "ste-events": "2.0.9",
     "tui-grid": "4.21.22",
-    "uuid": "9.0.0",
+    "uuid": "11.1.1",
     "vinyl": "3.0.1",
     "vite-plugin-node-polyfills": "0.24.0",
     "waveform-playlist": "4.3.3",
-    "ws": "8.18.3",
+    "ws": "8.21.0",
     "zod": "3.25.76"
   },
   "scripts": {
@@ -235,13 +235,50 @@
     },
     "@typescript-eslint/parser": "$@typescript-eslint/parser",
     "@typescript-eslint/eslint-plugin": "$@typescript-eslint/eslint-plugin",
-    "postcss": "8.5.15",
+    "postcss": "8.5.22",
     "serialize-javascript": "7.0.5",
-    "tar": "7.5.16"
+    "tar": "7.5.16",
+    "ajv@6": "6.15.0",
+    "ajv@8": "8.18.0",
+    "brace-expansion@1": "1.1.16",
+    "brace-expansion@2": "2.1.3",
+    "brace-expansion@5": "5.0.8",
+    "diff@3": "3.5.1",
+    "diff@4": "4.0.4",
+    "diff@5": "5.2.2",
+    "dompurify": "3.4.12",
+    "fast-uri": "3.1.4",
+    "form-data": "4.0.6",
+    "hono": "4.12.27",
+    "joi": "17.13.4",
+    "js-yaml": "4.3.0",
+    "linkify-it": "5.0.2",
+    "markdown-it": "14.2.0",
+    "morgan": "1.11.0",
+    "on-headers": "1.1.0",
+    "tmp": "0.2.7",
+    "undici": "7.28.0",
+    "uuid": "11.1.1",
+    "mocha": {
+      "minimatch": "5.1.9",
+      "nanoid": "3.3.16",
+      "glob": {
+        "minimatch": "3.1.5"
+      }
+    },
+    "serve-handler": {
+      "minimatch": "3.1.5"
+    }
+  },
+  "overridesNotes": {
+    "_comment": "package.json is strict JSON and cannot hold inline comments; this npm-ignored key documents non-obvious overrides so a future dependency refresh does not silently drop or downgrade them.",
+    "brace-expansion": "The @1/@2/@5 pins (1.1.16 / 2.1.3 / 5.0.8) are each the LATEST published release in their major. They clear the earlier GHSA-3jxr-9vmj-r5cp, and 2.1.3 (published 2026-07-28) / 5.0.8 (published 2026-07-23) CLOSE GHSA-mh99-v99m-4gvg / CVE-2026-14257 (High, CVSS 7.5 DoS: a chained-brace glob keeps result COUNT under the 100k cap while growing each result's LENGTH, exhausting memory into an uncatchable OOM) for every 2.x and 5.x copy in this tree; that advisory's 1.x fix (1.1.17) was never published and is superseded below. KNOWN-UNRESOLVED and tracked: the successor GHSA-rgw5-rvv9-x895 (High, published 2026-08-03: DoS via unbounded INTERMEDIATE arrays, bypassing the CVE-2026-14257 mitigation) affects <1.1.18, 2.x <2.1.4, and 4.0.0 through 5.0.8 — i.e. ALL THREE pinned versions — and names 1.1.18 / 2.1.4 / 5.0.9 as the first fixes, NONE of which are published to npm as of 2026-08-04, so no released-version pin can close it. Keep these pins at the highest available release; do not assume a refresh has fixed it. When 1.1.18 / 2.1.4 / 5.0.9 (or later) publish, bump every pin here plus mc/, samplecontent/addon, samplecontent/world, toexternal/app, regenerate all lockfiles, and add a constrained-heap child-process regression test using the chained-brace pattern to confirm remediation. Separately, the ROOT package-lock.json carries a brace-expansion 5.0.7 copy frozen inBundle inside npm (@semantic-release/npm -> npm@^11.6.2) that overrides cannot reach — see root package.json securityNotes. Runtime exposure is low in practice: brace-expansion is reached via glob/minimatch over developer-supplied patterns, not attacker-controlled input at product runtime.",
+    "nanoid": "Scoped to mocha only (do not make this a global override): mocha pins nanoid to the exact vulnerable release 3.3.3 (CVE-2024-55565 / GHSA-mwcw-c2x4-8c55, fixed in 3.3.8), so its copy must be forced; 3.3.16 is the latest 3.x release. nanoid 4+ is ESM-only and mocha is CJS, so 3.x is the ceiling for this pin. Every other consumer (currently postcss, which declares ^3.3.16) resolves its own compatible copy naturally — an earlier GLOBAL nanoid=3.3.8 override forced postcss below its declared floor, which is why this must stay scoped.",
+    "dompurify": "Pinned to 3.4.12 to clear the DOMPurify advisories (all versions through 3.4.11 are affected, including GHSA-c2j3-45gr-mqc4 which is patched in 3.4.12; DOMPurify 2 is not a safe fallback). tui-grid@4.21.22 is the LATEST release, declares dompurify ^2.3.9, and there is no tui-grid version that supports DOMPurify 3, so this is an intentional major-range mismatch. tui-grid is the ONLY dompurify consumer in the tree, and its shipped bundle (dist/tui-grid.js) statically INLINES DOMPurify 2.3.9 with no external require('dompurify') — so this override does not actually change tui-grid's runtime sanitization (the forced-major compatibility risk is moot); it only keeps node_modules/dompurify on a patched release for npm audit. The bundled 2.3.9 IS reachable at runtime: tui-grid's built-in DefaultRenderer renders every ordinary cell via innerHTML = sanitize(value), and the sole consumer (StatusList.tsx, via GridEditor.tsx) shows values (project status messages/context) that can originate from persisted preferences JSON, so a crafted value could reach the mXSS-affected bundled sanitizer (GHSA-gx9m-whjm-85jf). This is mitigated in GridEditor.tsx: every column defaults to TextCellRenderer (TextCellRenderer.ts), which writes cell values via textContent instead of innerHTML, so values are never parsed as HTML and the bundled sanitizer path is never reached. Do not remove or downgrade, and do not reintroduce innerHTML-based cell renderers for untrusted values. Fully removing the residual inlined 2.3.9 requires replacing tui-grid (unmaintained) with an MUI table."
   },
   "devDependencies": {
     "@axe-core/playwright": "4.11.0",
-    "@babel/core": "7.23.7",
+    "@babel/core": "7.29.6",
     "@babel/plugin-proposal-decorators": "7.23.7",
     "@babel/plugin-syntax-async-generators": "7.8.4",
     "@babel/plugin-syntax-class-properties": "7.12.13",
@@ -309,6 +346,7 @@
     "gulp-newer": "1.4.0",
     "gulp-sourcemaps": "3.0.0",
     "ignore-loader": "0.1.2",
+    "jsdom": "26.1.0",
     "mini-css-extract-plugin": "2.6.1",
     "mocha": "10.1.0",
     "playwright": "1.58.2",
@@ -321,7 +359,7 @@
     "typescript": "5.7.3",
     "vite": "7.3.5",
     "wait-on": "7.2.0",
-    "webpack": "5.102.1",
+    "webpack": "5.104.1",
     "webpack-cli": "6.0.1"
   }
 }

@@ -15,6 +15,8 @@ declare global {
   interface Window {
     oneDSInstance?: OneDSApplicationInsights;
     creatorToolsSite?: {
+      /** Real MCTools app version (e.g. "0.17.2"), stamped at release time. */
+      version?: string;
       termsOfUseUrl?: string;
       privacyUrl?: string;
       trademarksUrl?: string;
@@ -26,7 +28,37 @@ declare global {
   }
 }
 
+/**
+ * A single 1DS telemetry envelope (ITelemetryItem) as seen by a telemetry
+ * initializer. Custom, queryable dimensions (Part C) live on `data`; that is
+ * where MCTools stamps `mctoolsVersion` for auto-captured web analytics rows.
+ */
+export interface OneDSTelemetryItem {
+  name?: string;
+  time?: string;
+  iKey?: string;
+  ext?: Record<string, any>;
+  tags?: Record<string, any>;
+  baseType?: string;
+  baseData?: Record<string, any>;
+  data?: Record<string, any>;
+}
+
+/**
+ * Callback invoked for every telemetry envelope before it is sent. Returning
+ * `false` drops the item; any other value (including `void`) keeps it.
+ */
+export type OneDSTelemetryInitializer = (envelope: OneDSTelemetryItem) => boolean | void;
+
 export interface OneDSApplicationInsights {
+  /**
+   * Register a telemetry initializer that runs for every envelope (including
+   * auto-captured web analytics events) before it is sent. Used by site.js to
+   * tag each envelope with the real MCTools app version.
+   * @param telemetryInitializer Callback that may mutate or drop the envelope
+   */
+  addTelemetryInitializer?(telemetryInitializer: OneDSTelemetryInitializer): { remove: () => void } | void;
+
   /**
    * Track a custom event
    * @param event Event details

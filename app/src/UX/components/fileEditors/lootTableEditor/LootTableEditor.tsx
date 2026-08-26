@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { CSSProperties, useCallback, useEffect, useRef, useState } from "react";
+import "./LootTableEditor.css";
 import Project from "../../../../app/Project";
 import IPersistable from "../../../types/IPersistable";
 import { materialRenderer } from "../../../shared/components/SchemaForm/renderers/MaterialRenderer";
@@ -75,6 +76,16 @@ export default function LootTableEditor({ file, setActivePersistable, heightOffs
     file.setContent(JSON.stringify(formJson));
   };
 
+  // The viewport pin is necessary because of the way the parent components are
+  // designed — relative positioning doesn't work as expected. It is reflow-gated
+  // via CSS (see LootTableEditor.css): the offset is published as a CSS variable
+  // and only turned into calc(100vh - offset) above the reflow breakpoint, so at
+  // narrow/short (zoomed) viewports — where the offset can exceed 100vh — the
+  // form falls back to growing with its content instead of collapsing to zero
+  // height (WCAG 1.4.10 Reflow).
+  const hasHeightOffset = heightOffset !== undefined;
+  const flexStyle = hasHeightOffset ? ({ "--lte-height-offset": `${heightOffset}px` } as CSSProperties) : undefined;
+
   return (
     <>
       {error && (
@@ -82,9 +93,12 @@ export default function LootTableEditor({ file, setActivePersistable, heightOffs
           {error}
         </Alert>
       )}
-      {/* the height offset calculation is necessary because of the way the parent components are designed - relative
-      positioning doesn't work as expected */}
-      <FlexBox sx={{ height: `calc(100vh - ${heightOffset ?? 0}px)`, overflowY: "auto" }} column>
+      <FlexBox
+        className={"lte-advanced-flex" + (hasHeightOffset ? " lte-advanced-flex-pinned" : "")}
+        style={flexStyle}
+        sx={{ overflowY: "auto" }}
+        column
+      >
         {parsedData && contentKey && (
           <SchemaEditor
             key={contentKey}

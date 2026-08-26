@@ -3,7 +3,10 @@ import { ChildProcessWithoutNullStreams, spawn } from "child_process";
 import * as net from "net";
 import Utilities from "../core/Utilities";
 import IFile from "../storage/IFile";
-import axios, { AxiosResponse } from "axios";
+import axios, { AxiosResponse, AxiosError } from "axios";
+import { buildSizeSpoofedZip } from "./ZipFixtures";
+import SecurityUtilities from "../core/SecurityUtilities";
+import { ZipImportErrorCode } from "../storage/ZipImportError";
 import {
   defaultValidationReportExcludedTestIds,
   ensureReportJsonMatchesScenario,
@@ -81,14 +84,7 @@ function isTransientConnectError(err: unknown): boolean {
     return false;
   }
 
-  const transientCodes = new Set([
-    "ECONNREFUSED",
-    "ECONNRESET",
-    "EAI_AGAIN",
-    "ENOTFOUND",
-    "ETIMEDOUT",
-    "EPIPE",
-  ]);
+  const transientCodes = new Set(["ECONNREFUSED", "ECONNRESET", "EAI_AGAIN", "ENOTFOUND", "ETIMEDOUT", "EPIPE"]);
 
   const e = err as { code?: unknown; errors?: unknown };
   if (typeof e.code === "string" && transientCodes.has(e.code)) {
@@ -138,6 +134,29 @@ async function waitForServerStartup(
 }
 
 /**
+ * Registers the child's `exit` listener synchronously (call this immediately after
+ * spawn, before any `await`) and returns a promise that resolves with the exit code.
+ *
+ * In `--once` mode the server starts shutting down the instant it calls `res.end()`,
+ * so the child can exit *before* the test finishes awaiting the HTTP response. Node
+ * does not replay a missed `exit` event, so attaching the listener late would leave
+ * the `before` hook waiting until its multi-minute mocha timeout — the exact CI flake
+ * this avoids. Attaching at spawn time (and short-circuiting if the process has
+ * somehow already exited) closes that window while preserving the graceful-exit
+ * assertion (the returned promise still only resolves once the child actually exits).
+ */
+function trackProcessExit(serverProcess: ChildProcessWithoutNullStreams): Promise<number | null> {
+  return new Promise((resolve) => {
+    if (serverProcess.exitCode !== null) {
+      resolve(serverProcess.exitCode);
+      return;
+    }
+
+    serverProcess.once("exit", (code) => resolve(code));
+  });
+}
+
+/**
  * Creates a standard serve command validation test suite.
  * Reduces duplication across the 5 serveCommand* test suites.
  */
@@ -180,6 +199,10 @@ function createServeValidationTest(
       collectLines(serverProcess.stdout, stdoutLines);
       collectLines(serverProcess.stderr, stderrLines);
 
+      // Attach the exit listener synchronously with spawn so a fast --once shutdown
+      // can't fire `exit` before we're listening for it (see trackProcessExit).
+      const serverExitPromise = trackProcessExit(serverProcess);
+
       await sampleFile.loadContent();
       const content = sampleFile.content;
       if (content === null) {
@@ -205,17 +228,8 @@ function createServeValidationTest(
         "PACKFILECOUNT",
       ]);
 
-      await new Promise<void>((resolve) => {
-        if (serverProcess) {
-          serverProcess.on("exit", (code) => {
-            exitCode = code;
-            serverProcess = null;
-            resolve();
-          });
-        } else {
-          resolve();
-        }
-      });
+      exitCode = await serverExitPromise;
+      serverProcess = null;
     });
 
     it("should have no stderr lines", async () => {
@@ -267,6 +281,146 @@ createServeValidationTest("serveCommandValidateMashup", "/world/build/packages/a
 createServeValidationTest("serveCommandValidateAdvanced", "/addon/build/packages/aop_moremobs_advanced.zip", 16131, {
   mctsuite: "all",
 });
+
+const MB = 1024 * 1024;
+
+/**
+ * Spins up a real `serve` process and POSTs a zip that must be rejected by the content-scoped
+ * size handling, asserting the caller receives a *structured* JSON error (stable `code` +
+ * specific `message` + the recommended HTTP status) instead of the generic
+ * "Error processing passed-in validation package." string. This is the HTTP-layer contract
+ * that Auger depends on for task 1640388, so we verify it end-to-end through /api/validate.
+ */
+function createServeZipErrorTest(
+  suiteName: string,
+  port: number,
+  buildBody: () => Promise<Buffer>,
+  expected: { status: number; code: string }
+) {
+  describe(suiteName, () => {
+    let exitCode: number | null = null;
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+    let serverProcess: ChildProcessWithoutNullStreams | null = null;
+    let response: AxiosResponse | undefined;
+
+    before(async function () {
+      // Building the (potentially multi-GB decompressed) body plus server startup can be slow.
+      this.timeout(180000);
+
+      const passcode = Utilities.createUuid().substring(0, 8);
+
+      serverProcess = spawn("node", [
+        "./toolbuild/jsn/cli/index.mjs",
+        "serve",
+        "basicwebservices",
+        "--port",
+        String(port),
+        "--verbose",
+        "--once",
+        "--updatepc",
+        passcode,
+      ]);
+
+      collectLines(serverProcess.stdout, stdoutLines);
+      collectLines(serverProcess.stderr, stderrLines);
+
+      // Attach the exit listener synchronously with spawn so a fast --once shutdown
+      // can't fire `exit` before we're listening for it (see trackProcessExit).
+      const serverExitPromise = trackProcessExit(serverProcess);
+
+      const body = await buildBody();
+
+      await waitForServerStartup(stdoutLines, stderrLines, serverProcess, port);
+
+      const headers: Record<string, string> = {
+        mctpc: passcode,
+        "content-type": "application/zip",
+      };
+
+      // The endpoint answers with a non-2xx status for these cases, which axios surfaces as a
+      // rejected promise carrying the response — capture that so the assertions can inspect it.
+      try {
+        response = await postWithRetry(`http://${SERVER_HOST}:${port}/api/validate/`, body, headers);
+      } catch (err) {
+        const errResponse = (err as AxiosError).response;
+
+        if (!errResponse) {
+          throw err;
+        }
+
+        response = errResponse as AxiosResponse;
+      }
+
+      exitCode = await serverExitPromise;
+      serverProcess = null;
+    });
+
+    after(function () {
+      if (serverProcess) {
+        serverProcess.kill();
+        serverProcess = null;
+      }
+    });
+
+    it("returns the recommended HTTP status code", () => {
+      assert(response, "Expected a response from /api/validate.");
+      assert.equal(response!.status, expected.status);
+    }).timeout(10000);
+
+    it("returns a structured, non-generic error body with a stable code", () => {
+      assert(response, "Expected a response from /api/validate.");
+
+      const data = response!.data as { code?: string; message?: string; error?: string };
+
+      // This checks the HTTP response carries the enum value; the literal wire strings that
+      // external clients depend on (e.g. "PACKAGE_SIZE_EXCEEDED") are independently locked by the
+      // enum-contract test in ZipImportSizeTest.ts, so a wire rename fails there rather than
+      // silently moving producer and assertion together here.
+      assert.equal(data.code, expected.code, "Unexpected error code. Body: " + JSON.stringify(data));
+      assert(
+        typeof data.message === "string" && data.message.length > 0,
+        "Expected a specific error message. Body: " + JSON.stringify(data)
+      );
+      // Must NOT collapse to the generic catch-all message (the whole point of the fix).
+      assert.notEqual(data.message, "Error processing passed-in validation package.");
+    }).timeout(10000);
+
+    it("exit code should be zero (graceful shutdown in --once mode)", () => {
+      assert.equal(exitCode, 0, "stderr: " + stderrLines.join(" | "));
+    }).timeout(10000);
+  });
+}
+
+// Content/ over the 500 MiB Marketplace limit -> structured CONTENT_SIZE_EXCEEDED (413).
+// The zip only DECLARES the oversize Content/ entry (see buildSizeSpoofedZip); no large buffer
+// is compressed, so the HTTP/413 path is covered in milliseconds.
+createServeZipErrorTest(
+  "serveCommandValidateContentTooLarge",
+  16132,
+  async () =>
+    buildSizeSpoofedZip([
+      { path: "Content/big.bin", declaredSize: SecurityUtilities.MAX_CONTENT_DECOMPRESSED_SIZE + 1 },
+      { path: "README.md", data: new Uint8Array(16) },
+    ]),
+  { status: 413, code: ZipImportErrorCode.contentSizeExceeded }
+);
+
+// Total decompressed size over the 2 GiB unzip safety ceiling (driven by non-Content files, so
+// Content/ itself is tiny) -> structured PACKAGE_SIZE_EXCEEDED (413). Three entries each DECLARE
+// 700 MiB (2100 MiB total) without any real multi-GB compression or allocation.
+createServeZipErrorTest(
+  "serveCommandValidatePackageTooLarge",
+  16133,
+  async () =>
+    buildSizeSpoofedZip([
+      { path: "Content/small.json", data: new Uint8Array(32) },
+      { path: "huge/blob0.bin", declaredSize: 700 * MB },
+      { path: "huge/blob1.bin", declaredSize: 700 * MB },
+      { path: "huge/blob2.bin", declaredSize: 700 * MB },
+    ]),
+  { status: 413, code: ZipImportErrorCode.packageSizeExceeded }
+);
 
 describe("serveCommandTimeout", () => {
   let serverProcess: ChildProcessWithoutNullStreams | null = null;

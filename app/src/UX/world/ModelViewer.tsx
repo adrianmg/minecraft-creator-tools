@@ -88,7 +88,34 @@ interface IModelViewerState {
   uploadGeneration?: number;
   /** Geometry ProjectItem resolved during entity loading, used for full bbmodel export with textures. */
   geometryProjectItem?: ProjectItem;
+  /**
+   * The Minecraft texture path (e.g., "textures/entity/cow/cow") whose bytes are
+   * currently rendered, when the texture was resolved by variant key. Stamped as
+   * data-texture-path on the 3D area so tests can assert the EFFECTIVE rendered
+   * texture matches the selected variant, not just what the picker claims.
+   */
+  effectiveTexturePath?: string;
 }
+
+// Variant-picker state — the available texture variants, the selected key, and
+// the EntityTypeResourceDefinition used to resolve variant textures — is only
+// meaningful for multi-variant entities loaded via loadFromModelItem /
+// _loadEntityFromProject. Every OTHER load path (vanilla entity fallback,
+// vanilla attachable, direct-data, and URL loads) must clear it: this same
+// ModelViewer instance is reused as the user moves between entity types
+// (EntityTypeOverviewPanel keeps one mounted and only swaps entityTypeId), so a
+// leftover picker from a previous multi-variant entity would otherwise stay
+// visible and, when used, resolve the PREVIOUS entity's resource definition and
+// paint its texture onto the current model (Bug 1660628).
+const CLEARED_VARIANT_CONTEXT: Pick<
+  IModelViewerState,
+  "textureVariants" | "selectedTextureVariant" | "entityResourceDef" | "effectiveTexturePath"
+> = {
+  textureVariants: undefined,
+  selectedTextureVariant: undefined,
+  entityResourceDef: undefined,
+  effectiveTexturePath: undefined,
+};
 
 class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
   _lastFile: IFile | undefined;
@@ -259,6 +286,18 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
       selectedBlocks: this.state.selectedBlocks,
       selectedEntity: this.state.selectedEntity,
       skipVanillaResources: skipVanilla,
+      // Direct-data loads have no variant picker; clear one left by a previous
+      // multi-variant project entity (Bug 1660628).
+      ...CLEARED_VARIANT_CONTEXT,
+      // Reset cross-load-path state (see the Bug 1633420 note in
+      // loadFromModelItem) — this instance may previously have shown a model
+      // loaded through a different path.
+      transformedGeometry: undefined,
+      tintColor: undefined,
+      ignoreAlpha: undefined,
+      baseModel: undefined,
+      baseTextureData: undefined,
+      baseTextureUrl: undefined,
     });
   }
 
@@ -286,6 +325,8 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
           textureData: undefined,
           textureUrl: undefined,
           skipVanillaResources: skipVanilla,
+          // Clear any variant picker left by a previously viewed entity.
+          ...CLEARED_VARIANT_CONTEXT,
         });
         return;
       }
@@ -317,6 +358,17 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
         selectedBlocks: this.state.selectedBlocks,
         selectedEntity: this.state.selectedEntity,
         skipVanillaResources: skipVanilla,
+        // URL loads have no variant picker; clear one left by a previous
+        // multi-variant project entity (Bug 1660628).
+        ...CLEARED_VARIANT_CONTEXT,
+        // Reset cross-load-path state (see the Bug 1633420 note in
+        // loadFromModelItem).
+        transformedGeometry: undefined,
+        tintColor: undefined,
+        ignoreAlpha: undefined,
+        baseModel: undefined,
+        baseTextureData: undefined,
+        baseTextureUrl: undefined,
       });
     } catch (error) {
       Log.debugAlert(`Failed to load model from URL ${geometryUrl}: ${error}`);
@@ -326,6 +378,8 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
         textureData: undefined,
         textureUrl: undefined,
         skipVanillaResources: skipVanilla,
+        // Clear any variant picker left by a previously viewed entity.
+        ...CLEARED_VARIANT_CONTEXT,
       });
     }
   }
@@ -357,6 +411,7 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
     let textureVariants: string[] | undefined;
     let selectedTextureVariant: string | undefined;
     let entityResourceDef: EntityTypeResourceDefinition | undefined;
+    let effectiveTexturePath: string | undefined;
 
     // Check if this geometry has exactly one parent entity resource.
     // If so, we can offer a texture variant picker just like the entity type editor.
@@ -428,8 +483,11 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
           if (texturePath) {
             const resolved = await this._loadTextureByPath(texturePath, this.props.project);
             textureData = resolved.textureData;
-            if (!textureData && resolved.textureUrl) {
+            if (textureData) {
+              effectiveTexturePath = texturePath;
+            } else if (resolved.textureUrl) {
               fallbackTextureUrl = resolved.textureUrl;
+              effectiveTexturePath = texturePath;
             }
           }
         }
@@ -541,6 +599,14 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
     );
 
     this._clearLoadingTimeout();
+    // Bug 1633420: explicitly reset cross-load-path state. The same ModelViewer
+    // instance is reused when the user switches between preview sources (e.g.,
+    // a unit-cube block rendered via loadFromDirectData, then a custom-geometry
+    // block rendered here). A stale skipVanillaResources=true from the previous
+    // load made render() place the model at y=0 — inside the dirt/grass slab
+    // this path fills — instead of y=2 on top of it, so the block "disappeared
+    // under the grass". A stale transformedGeometry would similarly override
+    // the freshly loaded model in VolumeEditor (customGeometry wins there).
     this.setState({
       blockVolume: blockVolume,
       model: modelDef,
@@ -551,6 +617,14 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
       textureVariants: textureVariants,
       selectedTextureVariant: selectedTextureVariant,
       entityResourceDef: entityResourceDef,
+      effectiveTexturePath: effectiveTexturePath,
+      skipVanillaResources: false,
+      transformedGeometry: undefined,
+      tintColor: undefined,
+      ignoreAlpha: undefined,
+      baseModel: undefined,
+      baseTextureData: undefined,
+      baseTextureUrl: undefined,
     });
   }
 
@@ -586,6 +660,8 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
         model: undefined,
         textureData: undefined,
         textureUrl: undefined,
+        // Clear any variant picker left by a previously viewed entity.
+        ...CLEARED_VARIANT_CONTEXT,
       });
       return;
     }
@@ -597,6 +673,8 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
         model: undefined,
         textureData: undefined,
         textureUrl: undefined,
+        // Clear any variant picker left by a previously viewed entity.
+        ...CLEARED_VARIANT_CONTEXT,
       });
       return;
     }
@@ -613,6 +691,15 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
       selectedBlocks: prevState.selectedBlocks,
       selectedEntity: prevState.selectedEntity,
       skipVanillaResources: true,
+      // Reset attachable leftovers so a previously viewed armor piece doesn't
+      // keep its humanoid base model under this entity (see Bug 1660628).
+      baseModel: undefined,
+      baseTextureData: undefined,
+      baseTextureUrl: undefined,
+      // The vanilla fallback has no variant picker; clear one left by a
+      // previous multi-variant project entity so its stale entityResourceDef
+      // can't repaint this model (Bug 1660628).
+      ...CLEARED_VARIANT_CONTEXT,
     }));
   }
 
@@ -638,6 +725,8 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
         baseModel: undefined,
         baseTextureData: undefined,
         baseTextureUrl: undefined,
+        // Clear any variant picker left by a previously viewed entity.
+        ...CLEARED_VARIANT_CONTEXT,
       });
       return;
     }
@@ -654,6 +743,9 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
       selectedBlocks: prevState.selectedBlocks,
       selectedEntity: prevState.selectedEntity,
       skipVanillaResources: true,
+      // Attachables have no texture-variant picker; clear one left by a
+      // previous multi-variant project entity (Bug 1660628).
+      ...CLEARED_VARIANT_CONTEXT,
     }));
   }
 
@@ -697,31 +789,6 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
 
         // Populate child items (geometry, textures, etc.) if not already done
         await etrd.addChildItems(project, item);
-
-        // Find geometry and texture from project child items
-        let modelDef: ModelGeometryDefinition | undefined;
-        let textureData: Uint8Array | undefined;
-        let geometryProjectItem: ProjectItem | undefined;
-
-        if (item.childItems) {
-          for (const childRel of item.childItems) {
-            const childItem = childRel.childItem;
-
-            if (childItem.itemType === ProjectItemType.modelGeometryJson && childItem.primaryFile) {
-              await childItem.loadContent();
-              modelDef = await ModelGeometryDefinition.ensureOnFile(childItem.primaryFile);
-              geometryProjectItem = childItem;
-            }
-
-            if (childItem.itemType === ProjectItemType.texture && childItem.primaryFile) {
-              await childItem.loadContent();
-
-              if (childItem.primaryFile.content instanceof Uint8Array) {
-                textureData = childItem.primaryFile.content;
-              }
-            }
-          }
-        }
 
         // Collect texture variant keys from the entity resource definition.
         // Filter out overlay-only variants (e.g., "_tame" suffixed keys for cats are
@@ -770,15 +837,74 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
         const textureVariants = filteredKeys && filteredKeys.length > 1 ? filteredKeys : undefined;
         const selectedVariant = textureVariants ? textureVariants[0] : (textureKeys?.[0] ?? "default");
 
-        // Load texture for the selected variant.
-        let textureUrl: string | undefined;
-        if (!textureData) {
-          const texturePath = etrd.getTextureByKey(selectedVariant);
-          if (texturePath) {
-            const resolved = await this._loadTextureByPath(texturePath, project);
-            textureData = resolved.textureData;
-            textureUrl = resolved.textureUrl;
+        // Resolve the geometry id and texture path TOGETHER for the selected
+        // variant, so the rendered pair always matches. The child scan below
+        // must not decide either: an entity can have several geometry children
+        // (cow.v2 / cow.warm / cow.cold) AND several texture children, and
+        // gallery imports list variants in arbitrary order — letting iteration
+        // order win rendered the LAST child (e.g., the warm-cow texture) under
+        // the primary geometry while the picker reported the default variant.
+        const matched = etrd.getMatchedGeometryAndTexture(selectedVariant);
+        const primaryGeometryId = matched.geometryId ?? geometryList[0];
+
+        // Find the primary geometry among the project child items. Also keep
+        // the FIRST texture child, but only as a last-resort fallback for
+        // resources whose texture path can't be resolved below.
+        let modelDef: ModelGeometryDefinition | undefined;
+        let geometryProjectItem: ProjectItem | undefined;
+        let fallbackChildTextureData: Uint8Array | undefined;
+
+        if (item.childItems) {
+          let foundPrimaryGeometry = false;
+
+          for (const childRel of item.childItems) {
+            const childItem = childRel.childItem;
+
+            if (childItem.itemType === ProjectItemType.modelGeometryJson && childItem.primaryFile) {
+              await childItem.loadContent();
+              const candidateDef = await ModelGeometryDefinition.ensureOnFile(childItem.primaryFile);
+              const matchesPrimary = candidateDef !== undefined && candidateDef.identifiers.includes(primaryGeometryId);
+
+              if (!foundPrimaryGeometry && (modelDef === undefined || matchesPrimary)) {
+                modelDef = candidateDef;
+                geometryProjectItem = childItem;
+                foundPrimaryGeometry = matchesPrimary;
+              }
+            }
+
+            if (
+              fallbackChildTextureData === undefined &&
+              childItem.itemType === ProjectItemType.texture &&
+              childItem.primaryFile
+            ) {
+              await childItem.loadContent();
+
+              if (childItem.primaryFile.content instanceof Uint8Array) {
+                fallbackChildTextureData = childItem.primaryFile.content;
+              }
+            }
           }
+        }
+
+        // Load the texture that belongs to the selected variant.
+        let textureData: Uint8Array | undefined;
+        let textureUrl: string | undefined;
+        let effectiveTexturePath = matched.texturePath;
+
+        if (matched.texturePath) {
+          const resolved = await this._loadTextureByPath(matched.texturePath, project);
+          textureData = resolved.textureData;
+          textureUrl = resolved.textureUrl;
+        }
+
+        // Fall back to the first texture child only when the variant path
+        // produced no actual bytes (no texture paths declared, or the path
+        // matched nothing in the project or vanilla data — a guessed vanilla
+        // URL loses to real project bytes here).
+        if (!textureData && fallbackChildTextureData) {
+          textureData = fallbackChildTextureData;
+          textureUrl = undefined;
+          effectiveTexturePath = undefined;
         }
 
         if (modelDef && modelDef.defaultGeometry) {
@@ -798,8 +924,23 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
             textureVariants: textureVariants,
             selectedTextureVariant: selectedVariant,
             entityResourceDef: etrd,
+            effectiveTexturePath: effectiveTexturePath,
             geometryProjectItem: geometryProjectItem,
             skipVanillaResources: true,
+            // Bug 1660628: explicitly reset cross-load-path state, mirroring the
+            // Bug 1633420 fix in loadFromModelItem. This same ModelViewer
+            // instance is reused as the user moves between entity types; a
+            // previous entity that resolved through the VANILLA path (e.g., a
+            // rabbit whose project relations are incomplete) leaves its
+            // transformedGeometry behind, and VolumeEditor prefers
+            // customGeometry over the fresh model — rendering the old entity's
+            // model under this entity's texture until the project is reloaded.
+            transformedGeometry: undefined,
+            tintColor: undefined,
+            ignoreAlpha: undefined,
+            baseModel: undefined,
+            baseTextureData: undefined,
+            baseTextureUrl: undefined,
           }));
 
           return true;
@@ -877,6 +1018,7 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
       textureData: textureData,
       textureUrl: textureUrl,
       selectedTextureVariant: variantKey,
+      effectiveTexturePath: texturePath,
     }));
   }
 
@@ -1051,6 +1193,11 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
 
     const entityTools: any[] = [];
 
+    // Exposed via data-model-y on the 3D-area wrappers below so UI tests can
+    // assert model placement (e.g., the Bug 1633420 regression, where a stale
+    // skipVanillaResources flag buried the model under the grass slab).
+    let modelY: number | undefined;
+
     if (this.state !== null && this.state.blockVolume !== undefined) {
       let viewBounds: IBlockVolumeBounds | undefined;
       const volume = this.state.blockVolume;
@@ -1069,6 +1216,8 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
       entity.customTextureUrl = this.state.textureUrl;
       entity.customTintColor = this.state.tintColor;
       entity.customIgnoreAlpha = this.state.ignoreAlpha;
+
+      modelY = entity.location.y;
 
       // Build entity list — includes optional base humanoid model for armor attachables
       const entities: Entity[] = [];
@@ -1091,8 +1240,22 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
       // BabylonJS scene once during componentDidMount and does not re-render
       // entity meshes on prop changes, so a key change is the simplest way to
       // get the new texture data on screen.
+      //
+      // The key also includes the resource mode (skipVanillaResources): both the
+      // vanilla terrain/blocks definitions and the environment (isolated platform
+      // vs. sky + grass slab) are mount-time decisions in VolumeEditor. A child
+      // mounted in skip mode never loads the vanilla definitions, and its
+      // componentDidUpdate never reloads them — so when a reused ModelViewer
+      // flips modes (e.g., unit-cube dice preview → custom-geometry crate,
+      // Bug 1633420), a retained child would hang on "Loading definitions..."
+      // forever. Keying on the mode remounts it so load() runs for the new mode.
       const volumeKey =
-        "ve_" + (this.state.selectedTextureVariant || "default") + "_" + (this.state.uploadGeneration || 0);
+        "ve_" +
+        (this.state.skipVanillaResources ? "iso" : "van") +
+        "_" +
+        (this.state.selectedTextureVariant || "default") +
+        "_" +
+        (this.state.uploadGeneration || 0);
 
       interior = (
         <VolumeEditor
@@ -1169,6 +1332,16 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
       this._volumeEditor.resize();
     }
 
+    // The EFFECTIVE geometry the 3D view renders, exposed for tests: VolumeEditor
+    // prefers customGeometry (state.transformedGeometry) over the model's default
+    // geometry, so mirror that exact precedence here. This is what made Bug
+    // 1660628 invisible to model-state checks — the wrapper's model could be
+    // correct while a stale transformedGeometry rendered another entity's shape.
+    const effectiveGeometry = this.state?.transformedGeometry || this.state?.model?.defaultGeometry;
+    const effectiveGeometryId =
+      effectiveGeometry?.description?.identifier ||
+      (this.state?.transformedGeometry ? "transformed-unidentified" : this.state?.model?.identifiers?.[0]);
+
     // In readOnly mode, hide most toolbar items and just show the 3D view
     // Show texture variant picker if multiple variants are available
     if (this.props.readOnly) {
@@ -1208,7 +1381,14 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
       return (
         <div className="mov-area mov-area-readonly" style={{ ...sizeStyle, position: "relative" }}>
           {variantPicker}
-          <div className="mov-threedarea-lg mov-threedarea-readonly">{interior}</div>
+          <div
+            className="mov-threedarea-lg mov-threedarea-readonly"
+            data-geometry-id={effectiveGeometryId}
+            data-texture-path={this.state?.effectiveTexturePath}
+            data-model-y={modelY}
+          >
+            {interior}
+          </div>
         </div>
       );
     }
@@ -1290,7 +1470,14 @@ class ModelViewer extends Component<IModelViewerProps, IModelViewerState> {
             {entityTools}
           </div>
         </div>
-        <div className={visibleAreaCss}>{interior}</div>
+        <div
+          className={visibleAreaCss}
+          data-geometry-id={effectiveGeometryId}
+          data-texture-path={this.state?.effectiveTexturePath}
+          data-model-y={modelY}
+        >
+          {interior}
+        </div>
         {selectionDetails}
         {blockAdder}
       </div>
