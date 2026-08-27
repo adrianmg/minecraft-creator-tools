@@ -10,6 +10,8 @@ const downloadResources = require("./tools/gulp-downloadResources");
 const updateVersions = require("./tools/gulp-updateVersions");
 const textReplaceStream = require("./tools/gulp-textReplaceStream");
 const textReplace = require("./tools/gulp-textReplace");
+const stampSiteBootstrapUrl = require("./tools/stampSiteBootstrapUrl");
+const through2 = require("through2");
 const tgaToPng = require("./tools/gulp-tgaToPng");
 const webpack = require("webpack");
 
@@ -252,12 +254,26 @@ function stripSourceMapA() {
 }
 
 function customizeSiteBody() {
+  // Pin the site.js bootstrap to a release-specific URL. site.js is served
+  // unhashed and initializes 1DS telemetry; without the version query a new
+  // release's index.html (with content-hashed bundles) can pair with a stale
+  // cached site.js, mislabeling auto-captured telemetry rows with the previous
+  // release's version. Read package.json at task run time — the release
+  // pipeline stamps versions before building.
+  const appVersion = JSON.parse(fs.readFileSync("./package.json", "utf-8")).version;
+
   // Match the root div with or without the translate="no"/notranslate opt-out attributes.
   // The HTML source declares them to prevent in-browser translation extensions from
   // breaking React/Monaco DOM, but the body inserted from site/index.body.html also
   // declares them, so the swap remains a no-op for those attributes.
   return gulp
     .src(["site/index.body.html"], { base: "" })
+    .pipe(
+      through2.obj((chunk, _encoding, callback) => {
+        chunk.contents = Buffer.from(stampSiteBootstrapUrl(chunk.contents.toString("utf-8"), appVersion));
+        callback(null, chunk);
+      })
+    )
     .pipe(textReplaceStream("build/index.html", /<div id="root"(?:\s+[^>]*)?><\/div>/gi));
 }
 
@@ -833,6 +849,7 @@ function runUpdateVersions() {
         "./jsnode/package.json",
         "./vscode/package.json",
         "./src/core/Constants.ts",
+        "./public/site.js",
       ])
     );
 }

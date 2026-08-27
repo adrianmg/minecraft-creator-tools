@@ -9,6 +9,7 @@ import "tui-grid/dist/tui-grid.css";
 import { OptColumn } from "tui-grid/types/options";
 import { getThemeColors } from "../../../../hooks/theme/useThemeColors";
 import IProjectTheme from "../../../../types/IProjectTheme";
+import TextCellRenderer from "./TextCellRenderer";
 
 interface IGridEditorProps {
   file?: IFile;
@@ -137,7 +138,7 @@ export default class GridEditor extends Component<IGridEditorProps, IGridEditorS
         width: "auto",
         bodyHeight: "fitToParent",
         el: this.rootElt.current,
-        columns: this.props.columns ? this.props.columns : [],
+        columns: this._withSafeRenderers(this.props.columns),
         data: this.props.data ? this.props.data : [],
       });
 
@@ -146,6 +147,23 @@ export default class GridEditor extends Component<IGridEditorProps, IGridEditorS
 
       window.setTimeout(this._updateGrid, 1000);
     }
+  }
+
+  // TUI Grid's built-in DefaultRenderer renders each cell via
+  // `innerHTML = dompurify.sanitize(value)` using the DOMPurify 2.3.9 copy
+  // inlined in the tui-grid bundle (affected by mXSS advisory
+  // GHSA-gx9m-whjm-85jf). Default every column to TextCellRenderer, which writes
+  // via `textContent`, so cell values are never parsed as HTML and that
+  // vulnerable sanitizer path is never reached. Columns may still opt into a
+  // custom renderer explicitly.
+  private _withSafeRenderers(columns?: OptColumn[]): OptColumn[] {
+    if (!columns) {
+      return [];
+    }
+
+    return columns.map((column) =>
+      column.renderer ? column : { ...column, renderer: { type: TextCellRenderer } }
+    );
   }
 
   _handleGridClick(ev: any) {

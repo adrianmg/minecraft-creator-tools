@@ -277,8 +277,22 @@ export default class LootTableVisualEditor extends Component<ILootTableVisualEdi
       return <div className="ltve-loading">Loading loot table...</div>;
     }
 
+    // The nearest sized ancestor (.pie-outer) only sets min-height, so the
+    // CSS height:100% resolves to auto and inner scroll areas never engage.
+    // Publish the app-chrome offset as a CSS variable; LootTableVisualEditor.css
+    // viewport-pins the container with it only above the reflow breakpoint. At
+    // narrow/short (zoomed) viewports the offsets can exceed 100vh — an inline
+    // calc(100vh - offset) would clamp the editor to zero height — so there the
+    // container falls back to growing with its content, and the hosting editor
+    // column (.pe-col2/.pe-col3and4, ProjectEditor.css) becomes the scroll
+    // container that makes the grown content reachable (WCAG 1.4.10 Reflow).
+    const hasHeightOffset = this.props.heightOffset !== undefined;
+    const containerStyle = hasHeightOffset
+      ? ({ "--ltve-height-offset": `${this.props.heightOffset}px` } as React.CSSProperties)
+      : undefined;
+
     return (
-      <div className="ltve-container">
+      <div className={"ltve-container" + (hasHeightOffset ? " ltve-container-pinned" : "")} style={containerStyle}>
         {error && (
           <Alert severity="error" className="ltve-error">
             {error}

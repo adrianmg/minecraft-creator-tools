@@ -1,7 +1,7 @@
 /**
  * ItemAddComponentDialog.spec.ts
  *
- * Regression coverage for the Add Component dialog freeze: selecting the "Item" entry (the
+ * Regression coverage for selecting the "Item" entry (the
  * minecraft:item document wrapper form, offered as if it were a component)
  * in the item editor's Add Component dialog froze the whole browser tab via
  * an infinite componentDidUpdate/setState loop in ItemTypeAddComponent —
@@ -140,7 +140,7 @@ async function verifyAddComponentDialog(page: Page): Promise<void> {
   await expect(dialog).toBeHidden({ timeout: 5000 });
 }
 
-test.describe("Item editor Add Component dialog freeze regression", () => {
+test.describe("Item editor Add Component dialog regression", () => {
   test("excludes minecraft:item and stays responsive in both visual modes", async ({ page }) => {
     test.setTimeout(150000);
 

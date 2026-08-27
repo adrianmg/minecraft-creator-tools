@@ -6096,7 +6096,7 @@ class ProjectEditor extends Component<IProjectEditorProps, IProjectEditorState> 
             onTabSelected={this._handleEditorTabSelected}
             onTabClosed={this._handleEditorTabClosed}
           />
-          <div style={{ flex: 1, overflow: "hidden" }}>{interior}</div>
+          <div className="pe-mainFocusInterior">{interior}</div>
         </main>
       );
     } else if (viewMode === CreatorToolsEditorViewMode.itemsFocus) {

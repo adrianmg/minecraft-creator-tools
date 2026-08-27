@@ -348,6 +348,16 @@
   overflow: hidden;
 }
 
+/* Focused Mode: the flex child of .pe-colAll that hosts the item editor,
+   below the EditorTabBar. Clips on desktop (editors pin themselves to the
+   viewport and scroll internally); becomes the scroll container at
+   narrow/short viewports — see the reflow media block below. */
+.pe-mainFocusInterior {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
 .pe-col3 {
   grid-column-start: 3;
   grid-column-end: 4;
@@ -449,6 +459,36 @@
   border-bottom: 2px solid #555;
   pointer-events: none;
   z-index: 1;
+}
+
+/* Narrow or short viewports: make the editor columns the explicit scroll
+   container. Below the reflow breakpoint the visual editors drop their
+   viewport pin and grow with their content (see LootTableVisualEditor.css /
+   TradeTableVisualEditor.css); with the columns' overflow hidden that growth
+   was clipped with no scrollbar anywhere — content past the first band was
+   unreachable. Scroll vertically here instead; horizontal stays hidden so
+   zoomed layouts never require two-dimensional scrolling (WCAG 1.4.10
+   Reflow). The breakpoints are the exact complement of the editors' pin
+   media query (min-width: 481px) and (min-height: 481px). */
+@media only screen and (max-width: 480px), only screen and (max-height: 480px) {
+  .pe-col2,
+  .pe-col3and4,
+  .pe-mainFocusInterior {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  /* Focused Mode pins .pe-colAll with an inline height:calc(100vh - offset)
+     (ProjectEditor.tsx) whose offsets assume desktop chrome heights; at
+     narrow/short viewports they can exceed 100vh, collapsing the entire
+     editor band to zero. min-height wins over the inline height, so floor it
+     to the true worst-case available band: viewport minus the toolbar row
+     (40px) and the short-viewport expanded status row (150px, per the
+     max-height:600 media block above). When the inline pin computes a larger
+     (correct) height, the inline value still applies. */
+  .pe-colAll {
+    min-height: calc(100vh - 190px);
+  }
 }
 
 /* Mobile layout: collapse to single panel */

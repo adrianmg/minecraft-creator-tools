@@ -106,9 +106,7 @@ async function confirmNameDialog(page: Page): Promise<void> {
   if (!(await dialog.isVisible({ timeout: 3000 }).catch(() => false))) {
     return;
   }
-  const confirm = dialog
-    .locator('button:has-text("Add"), button:has-text("OK"), button:has-text("Create")')
-    .first();
+  const confirm = dialog.locator('button:has-text("Add"), button:has-text("OK"), button:has-text("Create")').first();
   if (await confirm.isVisible({ timeout: 1500 }).catch(() => false)) {
     await confirm.click();
   } else {
@@ -138,9 +136,7 @@ async function clickProjectItem(page: Page, label: RegExp): Promise<boolean> {
     return true;
   }
 
-  const titleAttr = sidebarLocator
-    .locator(`[title*="${label.source.replace(/[\\/.*+?^${}()|[\]]/g, "")}" i]`)
-    .first();
+  const titleAttr = sidebarLocator.locator(`[title*="${label.source.replace(/[\\/.*+?^${}()|[\]]/g, "")}" i]`).first();
   if (await titleAttr.isVisible({ timeout: 1500 }).catch(() => false)) {
     await titleAttr.click();
     await page.waitForTimeout(2000);
@@ -299,39 +295,151 @@ test.describe("LootTableVisualEditor @focused", () => {
     testInfo.setTimeout(90000);
     expect(await enterEditor(page)).toBe(true);
 
-    if (!(await openContentWizard(page))) {
-      console.log("Loot table: wizard didn't open");
-      return;
-    }
-    if (!(await clickWizardMainOption(page, "Loot Table"))) {
-      console.log("Loot table: main-option tile not found");
-      return;
-    }
+    // These are hard preconditions: if any wizard step silently fails, the
+    // Bug 1643412 regression block below would never run and the test would
+    // pass vacuously.
+    expect(await openContentWizard(page), "content wizard must open").toBe(true);
+    expect(await clickWizardMainOption(page, "Loot Table"), "Loot Table wizard tile must be present").toBe(true);
     await confirmNameDialog(page);
     await page.screenshot({ path: `${SCREENSHOT_DIR}/loot-01-after-add.png`, fullPage: true });
 
-    if (!(await clickProjectItem(page, /loot/i))) {
-      console.log("Loot table: created item not found in tree");
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/loot-not-found.png`, fullPage: true });
-      return;
+    // The wizard typically auto-opens the new file (and the sidebar may not
+    // even list loot tables in Focused mode); only fall back to clicking the
+    // item in the tree if the editor isn't already rendered.
+    const layout = page.locator(".ltve-simple-layout, .lpo-container").first();
+    if (!(await layout.isVisible({ timeout: 2000 }).catch(() => false))) {
+      if (!(await clickProjectItem(page, /loot/i))) {
+        console.log("Loot table: created item not found in tree");
+        await page.screenshot({ path: `${SCREENSHOT_DIR}/loot-not-found.png`, fullPage: true });
+      }
     }
 
-    // Editor root — distinctive class from LootTableVisualEditor (Simple tab default).
-    const layout = page.locator(".ltve-simple-layout, .lpo-container").first();
+    // Editor root — distinctive class from LootTableVisualEditor (Simple tab
+    // default). Hard assertion: the editor must render one way or the other.
     await expect(layout).toBeVisible({ timeout: 10000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/loot-02-editor.png`, fullPage: true });
 
-    // Add a pool via the "Add pool" button (works in both empty and populated states).
+    // Add a pool via the "Add pool" button (works in both empty and populated
+    // states). This is a hard precondition: if the control is missing, the
+    // Bug 1643412 regression block below would otherwise be skipped silently.
     const addPool = page.locator(".lpo-add-pool-btn").first();
-    if (await addPool.isVisible({ timeout: 2000 }).catch(() => false)) {
-      const beforeCount = await page.locator(".lpo-pool-card").count();
+    await expect(addPool, "Add Pool control must be present").toBeVisible({ timeout: 5000 });
+
+    const beforeCount = await page.locator(".lpo-pool-card").count();
+    await addPool.click();
+    await page.waitForTimeout(500);
+    const afterCount = await page.locator(".lpo-pool-card").count();
+    console.log(`Loot pools: ${beforeCount} -> ${afterCount}`);
+    expect(afterCount).toBeGreaterThanOrEqual(beforeCount + 1);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/loot-03-pool-added.png`, fullPage: true });
+
+    // Regression check for Bug 1643412: the editor container must stay
+    // bounded to the viewport so overflowing pools scroll inside
+    // .ltve-pool-panel instead of pushing content past the bottom of the
+    // screen with no way to reach it. Add pools until the pool panel
+    // overflows, then verify the container is viewport-bounded and the
+    // panel actually scrolls.
+    for (let i = 0; i < 8; i++) {
       await addPool.click();
-      await page.waitForTimeout(500);
-      const afterCount = await page.locator(".lpo-pool-card").count();
-      console.log(`Loot pools: ${beforeCount} -> ${afterCount}`);
-      expect(afterCount).toBeGreaterThanOrEqual(beforeCount + 1);
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/loot-03-pool-added.png`, fullPage: true });
+      await page.waitForTimeout(150);
     }
+    // Every click must have landed — otherwise the overflow condition the
+    // scroll assertions depend on may not exist.
+    await expect
+      .poll(() => page.locator(".lpo-pool-card").count(), { timeout: 10000 })
+      .toBeGreaterThanOrEqual(afterCount + 8);
+
+    // Bug 1643412's repro ran with the status area expanded — the tallest
+    // chrome the pin has to subtract. Hard precondition (mirroring the
+    // reflow suite): if the toggle is missing or expansion doesn't land,
+    // fail loudly instead of regressing a softer layout. Expansion is
+    // verified structurally via the .pe-gridOuterExpanded grid class.
+    const expandStatus = page
+      .getByRole("button", { name: /Show more information in the status area/i })
+      .or(page.locator('[title="Show more information in the status area"]'))
+      .first();
+    await expect(expandStatus, "status-area expand toggle must be present").toBeVisible({ timeout: 10000 });
+    await expandStatus.click();
+    await expect(
+      page.locator(".pe-gridOuterExpanded"),
+      "status area did not actually expand after clicking the toggle"
+    ).toBeVisible({ timeout: 5000 });
+    await page.waitForTimeout(300);
+
+    const scrollMetrics = await page.evaluate(() => {
+      const container = document.querySelector(".ltve-container");
+      const panel = document.querySelector(".ltve-pool-panel");
+      if (!container || !panel) {
+        return null;
+      }
+      panel.scrollTop = 10000;
+      const rect = container.getBoundingClientRect();
+
+      // Reachability must be proven through the clipping ancestors, not from
+      // the child's own box: getBoundingClientRect ignores ancestor clipping,
+      // so a child inside an overflow:hidden ancestor reports a healthy
+      // height while being invisible. Hit-test the LAST pool card after
+      // scrolling the panel to the bottom — document.elementFromPoint only
+      // returns it if it is genuinely painted at that point. Probe a few
+      // candidate points to tolerate borders and padding.
+      const cards = document.querySelectorAll(".lpo-pool-card");
+      const lastCard = cards.length > 0 ? cards[cards.length - 1] : null;
+      let lastCardVisible = false;
+      let lastCardBottom = -1;
+      if (lastCard) {
+        const cardRect = lastCard.getBoundingClientRect();
+        lastCardBottom = cardRect.bottom;
+        const x = Math.min(cardRect.left + cardRect.width / 2, window.innerWidth - 4);
+        for (const dy of [3, 8, 16]) {
+          const y = Math.min(cardRect.bottom - dy, window.innerHeight - 2);
+          if (y <= cardRect.top) {
+            continue;
+          }
+          const hit = document.elementFromPoint(x, y);
+          if (hit && (hit === lastCard || lastCard.contains(hit))) {
+            lastCardVisible = true;
+            break;
+          }
+        }
+      }
+
+      return {
+        containerHeight: rect.height,
+        containerBottom: rect.bottom,
+        viewportHeight: window.innerHeight,
+        panelScrollHeight: panel.scrollHeight,
+        panelClientHeight: panel.clientHeight,
+        panelScrollTop: panel.scrollTop,
+        lastCardVisible,
+        lastCardBottom,
+      };
+    });
+    console.log(`Loot scroll metrics: ${JSON.stringify(scrollMetrics)}`);
+    expect(scrollMetrics).not.toBeNull();
+    if (scrollMetrics) {
+      // A collapsed (zero-height) container would trivially satisfy a
+      // one-sided bottom bound — and panel.scrollTop can even go positive
+      // with clientHeight 0 — so first require a meaningfully tall editor.
+      expect(scrollMetrics.containerHeight).toBeGreaterThanOrEqual(200);
+      expect(scrollMetrics.panelClientHeight).toBeGreaterThanOrEqual(100);
+      // Two-sided bound: the container's bottom edge must sit in the lower
+      // half of the viewport (not collapsed near the top) without extending
+      // past it (the original bug pushed content below the fold).
+      expect(scrollMetrics.containerBottom).toBeLessThanOrEqual(scrollMetrics.viewportHeight + 1);
+      expect(scrollMetrics.containerBottom).toBeGreaterThanOrEqual(scrollMetrics.viewportHeight * 0.5);
+      expect(scrollMetrics.panelScrollHeight).toBeGreaterThan(scrollMetrics.panelClientHeight);
+      expect(scrollMetrics.panelScrollTop).toBeGreaterThan(0);
+      // The decisive reachability check: the last pool card must actually be
+      // painted (hit-testable) after scrolling — not merely report a healthy
+      // bounding box while an overflow:hidden ancestor clips it.
+      expect(
+        scrollMetrics.lastCardVisible,
+        `last pool card (bottom at ${Math.round(scrollMetrics.lastCardBottom)}px, viewport ` +
+          `${scrollMetrics.viewportHeight}px) is not hit-testable after scrolling the pool panel — ` +
+          `it is clipped by an ancestor or covered by another element`
+      ).toBeTruthy();
+    }
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/loot-04-scrolled.png`, fullPage: true });
 
     await saveProject(page);
     await expect(layout).toBeVisible();
@@ -392,9 +500,7 @@ test.describe("RecipeEditor @focused", () => {
     await expect(contentOrUnsupported).toBeVisible({ timeout: 5000 });
 
     // Switch to the Properties tab to exercise tab routing.
-    const propsTab = page
-      .locator('button:has-text("Properties"), button[title="Properties"]')
-      .first();
+    const propsTab = page.locator('button:has-text("Properties"), button[title="Properties"]').first();
     if (await propsTab.isVisible({ timeout: 2000 }).catch(() => false)) {
       await propsTab.click();
       await page.waitForTimeout(500);

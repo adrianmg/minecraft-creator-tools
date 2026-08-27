@@ -120,6 +120,19 @@
  *   const vMin = 1 - (v + height) / texHeight;
  *   const vMax = 1 - v / texHeight;
  *
+ * FLAT PLANES (zero-thickness cubes — wings, fins, ears, capes):
+ * -------------------------------------------------------------
+ * A cube with a 0 dimension (e.g. the allay's wings [0,5,8]) is rendered as a
+ * double-sided plane (_createPlaneMesh). It STILL uses Minecraft's *box* UV net:
+ * the two visible faces live in the side strip of the net, offset by the flat-axis
+ * depth `d`, NOT at the raw [u,v] origin.
+ *   - isPlaneX (w=0): west  [u, v+d, d, h] / east  [u+d, v+d, d, h]
+ *   - isPlaneY (h=0): up    [u+d, v, w, d] / down  [u+d+w, v, w, d]
+ *   - isPlaneZ (d=0): north [u, v, w, h]   / south [u+w, v, w, h]
+ * Sampling the raw [u,v] origin instead lands on the (usually blank) top/bottom
+ * strip — the classic "allay has no wings" bug, where the wing plane sampled the
+ * transparent [16,14] region and vanished. Keep this in sync with _calculateFaceUVs.
+ *
  * VANILLA GEOMETRY TRANSFORMS (VanillaGeometryTransforms.ts):
  * -----------------------------------------------------------
  * Some vanilla models need corrections for hardcoded Minecraft rendering quirks.
@@ -947,40 +960,74 @@ export class ModelMeshFactory {
     isPlaneY: boolean,
     isPlaneZ: boolean
   ): BABYLON.Mesh {
-    // Calculate UV for the visible face
-    // For planes, the UV is typically specified for the flat face
-    const u = Array.isArray(cube.uv) ? cube.uv[0] : 0;
-    const v = Array.isArray(cube.uv) ? cube.uv[1] : 0;
+    // Dimensions of the plane in Babylon units. The flat axis is dropped.
+    const w = size[0];
+    const h = size[1];
+    const d = size[2];
 
     let planeWidth: number;
     let planeHeight: number;
-    let uvWidth: number;
-    let uvHeight: number;
 
     if (isPlaneX) {
-      // YZ plane (facing X direction)
-      planeWidth = size[2] / 16; // depth becomes width
-      planeHeight = size[1] / 16; // height stays height
-      uvWidth = size[2];
-      uvHeight = size[1];
+      // YZ plane (facing X direction): depth becomes width, height stays height
+      planeWidth = d / 16;
+      planeHeight = h / 16;
     } else if (isPlaneY) {
       // XZ plane (facing Y direction)
-      planeWidth = size[0] / 16;
-      planeHeight = size[2] / 16;
-      uvWidth = size[0];
-      uvHeight = size[2];
+      planeWidth = w / 16;
+      planeHeight = d / 16;
     } else {
       // XY plane (facing Z direction)
-      planeWidth = size[0] / 16;
-      planeHeight = size[1] / 16;
-      uvWidth = size[0];
-      uvHeight = size[1];
+      planeWidth = w / 16;
+      planeHeight = h / 16;
     }
 
-    // Handle negative UV values by taking absolute value and adjusting
-    const absU = Math.abs(u);
-    const absV = Math.abs(v);
-    const faceUV = this._uvToVector4(absU, absV, uvWidth, uvHeight, texWidth, texHeight);
+    // Resolve the UVs for the two visible faces of the plane.
+    //
+    // CRITICAL: a zero-thickness cube still uses Minecraft's *box* UV net. The two
+    // visible faces live in the side strip of that net (offset by the flat-axis
+    // depth), NOT at the raw [u, v] origin. Sampling the raw origin lands on the
+    // top/bottom strip, which for many parts (e.g. the allay's wings, mapped at
+    // [16,14] on a 32x32 texture) is fully transparent — so the plane renders
+    // invisible. We mirror the face-offset math in _calculateFaceUVs so planes
+    // pick up the same art a real (non-degenerate) box would show.
+    let frontUV: BABYLON.Vector4;
+    let backUV: BABYLON.Vector4;
+
+    if (Array.isArray(cube.uv) && cube.uv.length === 2) {
+      const u = Math.abs(cube.uv[0]);
+      const v = Math.abs(cube.uv[1]);
+
+      if (isPlaneX) {
+        // west (-X) / east (+X)
+        frontUV = this._uvToVector4(u, v + d, d, h, texWidth, texHeight);
+        backUV = this._uvToVector4(u + d + w, v + d, d, h, texWidth, texHeight);
+      } else if (isPlaneY) {
+        // up (+Y) / down (-Y)
+        frontUV = this._uvToVector4(u + d, v, w, d, texWidth, texHeight);
+        backUV = this._uvToVector4(u + d + w, v, w, d, texWidth, texHeight);
+      } else {
+        // north (-Z) / south (+Z); d === 0 so these reduce to the [u, v] origin
+        frontUV = this._uvToVector4(u + d, v + d, w, h, texWidth, texHeight);
+        backUV = this._uvToVector4(u + d + w + d, v + d, w, h, texWidth, texHeight);
+      }
+    } else if (cube.uv && typeof cube.uv === "object") {
+      // Per-face UV: pick the opposing pair for this plane's orientation.
+      const uvFaces = cube.uv as IGeometryUVFaces;
+      if (isPlaneX) {
+        frontUV = this._faceUVToVector4(uvFaces.west, texWidth, texHeight);
+        backUV = this._faceUVToVector4(uvFaces.east, texWidth, texHeight);
+      } else if (isPlaneY) {
+        frontUV = this._faceUVToVector4(uvFaces.up, texWidth, texHeight);
+        backUV = this._faceUVToVector4(uvFaces.down, texWidth, texHeight);
+      } else {
+        frontUV = this._faceUVToVector4(uvFaces.north, texWidth, texHeight);
+        backUV = this._faceUVToVector4(uvFaces.south, texWidth, texHeight);
+      }
+    } else {
+      frontUV = new BABYLON.Vector4(0, 0, 1, 1);
+      backUV = frontUV;
+    }
 
     // Create a double-sided plane
     const plane = BABYLON.MeshBuilder.CreatePlane(
@@ -989,8 +1036,8 @@ export class ModelMeshFactory {
         width: planeWidth,
         height: planeHeight,
         sideOrientation: BABYLON.Mesh.DOUBLESIDE,
-        frontUVs: faceUV,
-        backUVs: faceUV,
+        frontUVs: frontUV,
+        backUVs: backUV,
       },
       this._scene
     );

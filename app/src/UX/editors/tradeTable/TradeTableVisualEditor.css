@@ -8,6 +8,25 @@
   height: 100%;
 }
 
+/* Above the reflow breakpoint, pin the container to the viewport minus the
+   app-chrome offset (passed via --ttve-height-offset from the component) so
+   the trade panels scroll internally instead of growing past the bottom of
+   the screen. Below it — narrow or short viewports, e.g. 320×256 at 400%
+   zoom — the chrome offsets (toolbar + expanded status area, 276px+) can
+   meet or exceed 100vh, which would clamp this calc to zero height; the
+   narrow layout instead keeps the base height:100% (→ auto) so content grows
+   and the hosting editor column (.pe-col2 / .pe-col3and4) scrolls it — that
+   column switches to overflow-y:auto below the same breakpoints (see
+   ProjectEditor.css), which is what makes the grown content reachable; the
+   document itself never scrolls (.pe-gridOuter is overflow:hidden)
+   (WCAG 1.4.10 Reflow). 480px matches the app's narrow-layout breakpoint in
+   ProjectEditor.css. */
+@media only screen and (min-width: 481px) and (min-height: 481px) {
+  .ttve-container-pinned {
+    height: calc(100vh - var(--ttve-height-offset, 0px));
+  }
+}
+
 .ttve-tab-bar {
   display: flex;
   gap: 0;

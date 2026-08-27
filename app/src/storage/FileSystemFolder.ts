@@ -78,8 +78,13 @@ export default class FileSystemFolder extends FolderBase implements IFolder {
 
     this.lastSavedFileCount = 0;
 
-    this.folders = {};
-    this.files = {};
+    // Null-prototype maps: a canonicalized child name (e.g. "__proto__") can never
+    // resolve to Object.prototype, so the later candFile.handle / candFolder.handle
+    // assignments in ensureFile/ensureFolder cannot pollute the global prototype
+    // (CodeQL js/prototype-polluting-assignment). Names are additionally guarded by
+    // Utilities.isUsableAsObjectKey() before any lookup or insertion.
+    this.folders = Object.create(null);
+    this.files = Object.create(null);
   }
 
   async getIsEmptyError(depth?: number, processedFolders?: number): Promise<string | undefined> {
