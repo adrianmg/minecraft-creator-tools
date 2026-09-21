@@ -230,18 +230,14 @@ describe("Comprehensive Content Types", async () => {
 
     const dataObject = pis.getDataObject();
 
-    // Exclude SCRIPTMODULE items that are volatile due to @minecraft/server beta version changes:
-    // - SCRIPTMODULE0: test pass/fail result (changes when 114 fires or not)
-    // - SCRIPTMODULE1: error count (changes when 114 fires or not)
-    // - SCRIPTMODULE100: BP module dependency info (contains beta version string)
-    // - SCRIPTMODULE114: beta version outdated error (fires only when version is stale)
-    // Also exclude new default generators' no-finding completion entries to avoid
+    // SCRIPTMODULE items are compared like any other: @minecraft/server
+    // registry data is pinned by the test environment (TestScriptModulePin
+    // via TestPaths), so the out-of-date-beta rule (114) and its pass/fail
+    // summary no longer drift with live dist-tags and no longer need
+    // volatility-based exclusions here.
+    // Exclude new default generators' no-finding completion entries to avoid
     // baseline updates when the generators are first added.
     await ensureReportJsonMatchesScenario(scenariosFolder, resultsFolder, dataObject, "comprehensive", [
-      "SCRIPTMODULE0",
-      "SCRIPTMODULE1",
-      "SCRIPTMODULE100",
-      "SCRIPTMODULE114",
       ...defaultValidationReportExcludedTestIds,
       "PACKFILECOUNT",
     ]);

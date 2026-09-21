@@ -4,7 +4,8 @@ import ProjectInfoItem from "../../ProjectInfoItem";
 import Pack, { PackType } from "../../../minecraft/Pack";
 import { InfoItemType } from "../../IInfoItemData";
 import { isPackIcon, parseImageMetadata } from "../../../storage/ImageUtilites";
-import { CheckPackIconsGeneratorTest as CheckPacksIconsGeneratorTest } from "./CheckPackIconsData";
+import { CheckPackIconsGeneratorTest as CheckPacksIconsGeneratorTest, PackIconValidationRules } from "./CheckPackIconsData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 const IconMaxWidth = 256;
 const IconMinWidth = 2;
@@ -20,10 +21,12 @@ const IconMinWidth = 2;
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/cpackicon.form.json} for topic definitions
  */
-export default class CheckPackIconsGenerator implements IProjectInfoGenerator {
+export default class CheckPackIconsGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id: string = "CPACKICON";
   title: string = "Pack Icon";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = PackIconValidationRules;
 
   private severity = InfoItemType.error;
 

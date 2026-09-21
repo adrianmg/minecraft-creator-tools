@@ -10,7 +10,8 @@ import ContentIndex from "../../../core/ContentIndex";
 import ProjectItemUtilities from "../../../app/ProjectItemUtilities";
 import TextureDefinition from "../../../minecraft/TextureDefinition";
 import StorageUtilities from "../../../storage/StorageUtilities";
-import { CheckTextureListGeneratorTest } from "./CheckTextureListData";
+import { CheckTextureListGeneratorTest, TextureListValidationRules } from "./CheckTextureListData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { CheckTextureListGeneratorTest };
 
@@ -31,9 +32,11 @@ export { CheckTextureListGeneratorTest };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/texturelist.form.json} for topic definitions
  */
-export default class CheckTextureListGenerator implements IProjectInfoGenerator {
+export default class CheckTextureListGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "TEXTURELIST";
   title = "Texture List Validation";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = TextureListValidationRules;
 
   performAddOnValidations = false;
 

@@ -61,10 +61,15 @@ import SpawnRulesBehaviorDefinition from "../../../minecraft/SpawnRulesBehaviorD
 import SoundDefinitionCatalogDefinition from "../../../minecraft/SoundDefinitionCatalogDefinition";
 import StorageUtilities from "../../../storage/StorageUtilities";
 import ProjectItem from "../../../app/ProjectItem";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
-export default class CrossReferenceIndexGenerator implements IProjectInfoGenerator {
+export default class CrossReferenceIndexGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "CROSSREFINDEX";
   title = "Cross-Reference Index";
+
+  // Index-only generator: it emits no validation results of its own, so its
+  // rule inventory is intentionally empty and the catalog reports it complete.
+  readonly validationRules: readonly ValidationRuleDefinition[] = [];
 
   performAddOnValidations = false;
 

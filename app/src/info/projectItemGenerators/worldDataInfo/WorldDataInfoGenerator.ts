@@ -21,7 +21,8 @@ import AnimationBehaviorDefinition from "../../../minecraft/AnimationBehaviorDef
 import ProjectInfoUtilities from "../../ProjectInfoUtilities";
 import { GameType } from "../../../minecraft/WorldLevelDat";
 import { IGeneratorOptions, ResourceConsumptionConstraint } from "../../ProjectInfoSet";
-import { WorldDataInfoGeneratorTest, MaxWorldRecordsToProcess } from "./WorldDataInfoData";
+import { WorldDataInfoGeneratorTest, MaxWorldRecordsToProcess, WorldDataValidationRules } from "./WorldDataInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { WorldDataInfoGeneratorTest, MaxWorldRecordsToProcess };
 
@@ -30,9 +31,11 @@ export { WorldDataInfoGeneratorTest, MaxWorldRecordsToProcess };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/worlddata.form.json} for topic definitions
  */
-export default class WorldDataInfoGenerator implements IProjectInfoItemGenerator {
+export default class WorldDataInfoGenerator implements IProjectInfoItemGenerator, IValidationRuleProvider {
   id = "WORLDDATA";
   title = "World Data Validation";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = WorldDataValidationRules;
 
   modernCommandVersion = 33; // corresponds to 1.20.0 versions of Minecraft.
 

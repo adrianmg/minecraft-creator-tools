@@ -19,11 +19,11 @@ import { test, expect, Page } from "@playwright/test";
 import { processMessage } from "./WebTestUtilities";
 import type { ConsoleMessage } from "@playwright/test";
 import * as fs from "fs";
-import * as path from "path";
+import { getServerStateFiles } from "./serverui-test-state";
 
 // ── Server port resolution (mirrors ServerUI.spec.ts) ──
 
-const PORT_FILE = path.resolve(__dirname, "../../debugoutput/.serverui-test-port");
+const { portFile: PORT_FILE } = getServerStateFiles("full");
 
 function getServerPort(): number {
   try {
@@ -166,8 +166,7 @@ async function collectUnlocalizedAttributes(page: Page): Promise<UnlocalizedStri
           const value = el.getAttribute(attr)?.trim();
           if (!value) continue;
           if (value.includes(MARKER_START)) continue;
-          const selector =
-            el.tagName.toLowerCase() + (el.className ? "." + String(el.className).split(" ")[0] : "");
+          const selector = el.tagName.toLowerCase() + (el.className ? "." + String(el.className).split(" ")[0] : "");
           results.push({ text: `[${attr}] ${value}`, selector, context: attr });
         }
       }
@@ -191,10 +190,12 @@ async function waitForServerReady(page: Page, maxRetries: number = 10): Promise<
   const serverUrl = getServerUrl();
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const response = await page.goto(`${serverUrl}/?locale=pseudo`, { timeout: 5000 });
+      const response = await page.goto(`${serverUrl}/?locale=pseudo`, {
+        timeout: 5000,
+        waitUntil: "domcontentloaded",
+      });
       if (response && response.ok()) {
-        await page.waitForLoadState("domcontentloaded");
-        await page.waitForTimeout(500);
+        await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 5000 });
         return true;
       }
     } catch {
@@ -207,6 +208,7 @@ async function waitForServerReady(page: Page, maxRetries: number = 10): Promise<
 
 async function loginWithPasscode(page: Page): Promise<boolean> {
   const passcodeInput = page.locator('input[type="password"]').first();
+  await passcodeInput.waitFor({ state: "attached", timeout: 10000 }).catch(() => {});
   if (!((await passcodeInput.count()) > 0)) {
     console.log("No password input found — may already be authenticated");
     return true;
@@ -225,8 +227,7 @@ async function loginWithPasscode(page: Page): Promise<boolean> {
     await page.keyboard.press("Enter");
   }
 
-  await page.waitForTimeout(3000);
-  await page.waitForLoadState("domcontentloaded");
+  await expect(page.locator('input[type="password"]').first()).toBeHidden({ timeout: 30000 });
   return true;
 }
 

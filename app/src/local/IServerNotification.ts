@@ -76,10 +76,31 @@ export type ServerEventName =
   | "debugStats"
   | "debugConnected"
   | "debugDisconnected"
+  | "debugSchema"
   | "debugPaused"
   | "debugResumed"
   | "debugProfilerState"
+  | "debugStage"
   | "profilerCapture";
+
+/**
+ * The WebSocket events DebugStatsPanel subscribes to. HttpServer drops any
+ * notification a client has not subscribed to, so every debug event a
+ * server-side producer emits MUST be listed here - a producer without a
+ * matching subscription is silently discarded for web-hosted sessions and
+ * the feature then works only over Electron IPC (which has no such filter).
+ */
+export const DEBUG_PANEL_SUBSCRIPTION_EVENTS: ServerEventName[] = [
+  "debugStats",
+  "debugConnected",
+  "debugDisconnected",
+  "debugSchema",
+  "debugPaused",
+  "debugResumed",
+  "debugProfilerState",
+  "debugStage",
+  "profilerCapture",
+];
 
 /**
  * File change notification body.
@@ -193,6 +214,18 @@ export interface IDebugStatItem {
   values: (number | string)[];
   /** Optional parent stat name for hierarchical reconstruction */
   parent?: string;
+  /** Full underscore-joined id path (e.g., "tick_worldtick"); used for schema tab matching */
+  fullId?: string;
+  /** Full id path of the parent stat */
+  parentFullId?: string;
+  /**
+   * Aggregate child rows as [childName, ...values] string tuples (from
+   * IStatData.children_string_values). Present when the stat aggregates its
+   * children (should_aggregate) instead of exposing them as separate stats -
+   * dynamic_properties_table and consolidated multi-column tables deliver
+   * their rows exclusively this way.
+   */
+  childrenStringValues?: string[][];
 }
 
 /**
@@ -204,6 +237,24 @@ export interface IDebugConnectedNotificationBody extends IServerNotificationBody
   protocolVersion: number;
   /** Session ID */
   sessionId?: string;
+  /** UUID of the script module the session is targeting */
+  targetModuleUuid?: string;
+  /** Script modules (plugins) available on the target; empty in diagnostics-only sessions */
+  plugins?: { name: string; module_uuid: string }[];
+  /** Debug endpoint host */
+  host?: string;
+  /** Debug endpoint port */
+  port?: number;
+  /** Capabilities of the negotiated protocol version (used for control gating) */
+  capabilities?: {
+    supportsCommands: boolean;
+    supportsProfiler: boolean;
+    supportsBreakpointsAsRequest: boolean;
+    supportsDiagnosticsSchema: boolean;
+    supportsEmptyTabs: boolean;
+  };
+  /** Who owns the single-client debug endpoint */
+  ownership?: "unattached" | "attachedByMct" | "attachedExternally" | "unknown";
 }
 
 /**
@@ -213,6 +264,19 @@ export interface IDebugDisconnectedNotificationBody extends IServerNotificationB
   eventName: "debugDisconnected";
   /** Reason for disconnection */
   reason: string;
+  /** Who owns the single-client debug endpoint after the disconnect */
+  ownership?: "unattached" | "attachedByMct" | "attachedExternally" | "unknown";
+}
+
+/**
+ * Debug diagnostics schema notification body (protocol v9+ SchemaEvent).
+ * Carries the raw wire descriptors; clients validate/build UI models via
+ * DiagnosticsSchemaUtilities so malformed descriptors degrade gracefully.
+ */
+export interface IDebugSchemaNotificationBody extends IServerNotificationBodyBase {
+  eventName: "debugSchema";
+  /** Raw SchemaEvent descriptors as sent by Minecraft (snake_case wire format) */
+  descriptors: unknown[];
 }
 
 /**
@@ -231,6 +295,25 @@ export interface IDebugPausedNotificationBody extends IServerNotificationBodyBas
  */
 export interface IDebugResumedNotificationBody extends IServerNotificationBodyBase {
   eventName: "debugResumed";
+}
+
+/**
+ * Debugger lifecycle stage notification body.
+ * Sent whenever the managed debugger flow moves to a new stage
+ * (see DebuggerLifecycle.ts for the stage/failure-kind models).
+ */
+export interface IDebugStageNotificationBody extends IServerNotificationBodyBase {
+  eventName: "debugStage";
+  /** Current lifecycle stage (DebuggerLifecycleStage value) */
+  stage: string;
+  /** Failure kind when stage is "failed" (DebuggerFailureKind value) */
+  failureKind?: string;
+  /** Sanitized error message when stage is "failed" */
+  message?: string;
+  /** Optional sanitized stage detail (e.g., "port 19144") */
+  detail?: string;
+  /** The dynamically reserved debug port */
+  debugPort?: number;
 }
 
 /**
@@ -282,9 +365,11 @@ export type IServerNotificationBody =
   | IDebugStatsNotificationBody
   | IDebugConnectedNotificationBody
   | IDebugDisconnectedNotificationBody
+  | IDebugSchemaNotificationBody
   | IDebugPausedNotificationBody
   | IDebugResumedNotificationBody
   | IDebugProfilerStateNotificationBody
+  | IDebugStageNotificationBody
   | IProfilerCaptureNotificationBody
   | IServerShutdownNotificationBody;
 

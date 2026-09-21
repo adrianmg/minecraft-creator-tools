@@ -38,10 +38,17 @@ import LocalEnvironment from "../local/LocalEnvironment";
 import LocalUtilities from "../local/LocalUtilities";
 import IFolder from "../storage/IFolder";
 import { applyTestVersionPin } from "./TestVersionPin";
+import { applyTestScriptModulePin } from "./TestScriptModulePin";
 
 // Pin the "current Minecraft version" used by validators so test baselines
 // are insulated from upstream version drift. See TestVersionPin.ts.
 applyTestVersionPin();
+
+// Pin @minecraft/server registry data so SCRIPTMODULE validation results are
+// deterministic and updater flows over checked-in sample content (e.g.
+// deployJs exports) do not rewrite manifests to whatever the live registry's
+// beta happens to be. See TestScriptModulePin.ts.
+applyTestScriptModulePin();
 
 // ---------------------------------------------------------------------------
 // Path Constants

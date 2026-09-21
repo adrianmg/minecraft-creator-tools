@@ -3,7 +3,9 @@
 
 import { PackType } from "../../../minecraft/Pack";
 import { InfoItemType } from "../../IInfoItemData";
+import { ProjectInfoSuite } from "../../IProjectInfoData";
 import { TestDefinition } from "../../tests/TestDefinition";
+import { defineValidationRule, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export enum VanillaProtectedAssetsInfoGeneratorTest {
   protectedVanillaAssetOverride = 101,
@@ -24,9 +26,21 @@ export const ProtectedVanillaAssetEntries: readonly ProtectedVanillaAssetEntry[]
 ];
 
 export const VanillaProtectedAssetsTests: Record<string, TestDefinition> = {
-  protectedVanillaAssetOverride: {
-    id: VanillaProtectedAssetsInfoGeneratorTest.protectedVanillaAssetOverride,
+  protectedVanillaAssetOverride: defineValidationRule({
+    generatorId: "VANPRO",
+    ruleIndex: VanillaProtectedAssetsInfoGeneratorTest.protectedVanillaAssetOverride,
+    name: "protectedVanillaAssetOverride",
     title: "Protected Vanilla Asset Override",
-    severity: InfoItemType.error,
-  },
+    severities: [InfoItemType.error],
+    suites: [ProjectInfoSuite.defaultInDevelopment],
+    source: {
+      file: "app/src/info/projectGenerators/vanillaProtectedAssetsInfo/VanillaProtectedAssetsInfoGeneratorData.ts",
+      symbol: "VanillaProtectedAssetsTests",
+    },
+  }),
 } as const;
+
+/** The VANPRO validation-rule inventory (see VanillaProtectedAssetsInfoGenerator). */
+export const VanillaProtectedAssetsValidationRules: readonly ValidationRuleDefinition[] = [
+  VanillaProtectedAssetsTests.protectedVanillaAssetOverride as ValidationRuleDefinition,
+];

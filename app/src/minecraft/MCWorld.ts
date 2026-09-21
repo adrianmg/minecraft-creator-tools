@@ -214,6 +214,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
   private _onWorldDataReloaded = new EventDispatcher<MCWorld, string>();
   /** Whether we're listening to storage events for automatic updates */
   private _isListeningToStorage = false;
+  private _storageUpdateQueue: Promise<void> = Promise.resolve();
 
   private _hasDynamicProps = false;
   private _hasCustomProps = false;
@@ -258,6 +259,9 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
    */
   private _dimensionIdsInChunks: Set<number> = new Set();
 
+  /** Number of unique LevelDB chunks stored in custom dimensions (ID >= 1000). */
+  private _customDimensionChunkCount = 0;
+
   /**
    * Parsed DimensionNameIdTable from LevelDB: maps dimension name to numeric ID.
    * Undefined if the DimensionNameIdTable key was not found.
@@ -283,6 +287,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
 
   /** Whether lazy loading mode is enabled for this world */
   private _isLazyLoadMode = false;
+  private _skipFullProcessingMode = false;
 
   /**
    * Set of chunk keys that exist in the world (format: "dim_x_z").
@@ -423,6 +428,11 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
     return this._dimensionIdsInChunks;
   }
 
+  /** Number of unique LevelDB chunks stored in custom dimensions (ID >= 1000). */
+  public get customDimensionChunkCount(): number {
+    return this._customDimensionChunkCount;
+  }
+
   /** Whether the DimensionNameIdTable key was found in the LevelDB. */
   public get hasDimensionNameIdTable(): boolean {
     return this._hasDimensionNameIdTable;
@@ -451,6 +461,25 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
         }
       }
     }
+  }
+
+  private _recordDimensionChunkMetadata(
+    keyBytes: Uint8Array,
+    seenCustomDimensionChunks: Set<string>
+  ): ReturnType<typeof WorldDataMetricsReducer.getChunkRecordMetadata> {
+    const chunkMetadata = WorldDataMetricsReducer.getChunkRecordMetadata(keyBytes);
+    if (!chunkMetadata) {
+      return undefined;
+    }
+
+    this._dimensionIdsInChunks.add(chunkMetadata.dimension);
+
+    if (chunkMetadata.dimension >= 1000 && !seenCustomDimensionChunks.has(chunkMetadata.chunkKey)) {
+      seenCustomDimensionChunks.add(chunkMetadata.chunkKey);
+      this._customDimensionChunkCount++;
+    }
+
+    return chunkMetadata;
   }
 
   /**
@@ -710,7 +739,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
    * is still considered loaded (subsequent calls reuse the existing state),
    * but per-chunk stats are only partial. Cleared by `clearAllData`.
    */
-  get wasLoadTruncated() {
+  public get wasLoadTruncated() {
     return this._wasLoadTruncated;
   }
 
@@ -826,23 +855,27 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
     // Subscribe to file content updates
     storage.onFileContentsUpdated.subscribe((sender, event) => {
       Log.verbose(`[MCWorld] Received onFileContentsUpdated: ${event.file.storageRelativePath}`);
-      this._handleStorageFileUpdate(event.file.storageRelativePath, event);
+      this._enqueueStorageUpdate(() => this._handleStorageFileUpdate(event.file.storageRelativePath, event));
     });
 
     // Subscribe to file additions
     storage.onFileAdded.subscribe((sender, file) => {
       Log.verbose(`[MCWorld] Received onFileAdded: ${file.storageRelativePath}`);
-      this._handleStorageFileAdded(file.storageRelativePath);
+      this._enqueueStorageUpdate(() => this._handleStorageFileAdded(file.storageRelativePath));
     });
 
     // Subscribe to file removals
     storage.onFileRemoved.subscribe((sender, path) => {
       Log.verbose(`[MCWorld] Received onFileRemoved: ${path}`);
-      this._handleStorageFileRemoved(path);
+      this._enqueueStorageUpdate(() => this._handleStorageFileRemoved(path));
     });
 
     this._isListeningToStorage = true;
     Log.message("[MCWorld] Successfully subscribed to storage events");
+  }
+
+  private _enqueueStorageUpdate(operation: () => Promise<void>) {
+    this._storageUpdateQueue = this._storageUpdateQueue.then(operation, operation);
   }
 
   /**
@@ -989,14 +1022,27 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
       // Parse the file and get affected chunk coordinates
       const affectedChunks = await this.levelDb.parseIncrementalFile(file);
 
-      if (affectedChunks.length === 0) {
+      const metadataChanged = this.levelDb.incrementalMetadataChanged;
+      if (affectedChunks.length === 0 && !metadataChanged) {
         return;
       }
 
       Log.verbose(`MCWorld: Incremental update - ${affectedChunks.length} chunks affected from ${path}`);
+      this.worldScanCache = undefined;
+
+      if (metadataChanged || affectedChunks.some((chunk) => chunk.hasDeletion || chunk.requiresReload)) {
+        await this.loadLevelDb(true, {
+          lazyLoad: this._isLazyLoadMode,
+          skipFullProcessing: this._skipFullProcessingMode || this._isLazyLoadMode,
+          maxChunksInCache: this._chunkCache?.maxChunks,
+        });
+        this._onWorldDataReloaded.dispatch(this, "leveldb");
+        return;
+      }
 
       // Update each affected chunk
       for (const coord of affectedChunks) {
+        this._dimensionIdsInChunks.add(coord.dimension);
         await this._updateChunkFromLevelDb(coord);
       }
     } catch (e) {
@@ -1104,10 +1150,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
         this._maxZ = (z + 1) * 16;
       }
 
-      // Add to chunk exists set
-      if (this._chunkExistsSet) {
-        this._chunkExistsSet.add(`${dimension}_${x}_${z}`);
-      }
+      this._chunkExistsSet.add(`${dimension}_${x}_${z}`);
     }
 
     // Track access for LRU cache
@@ -2641,23 +2684,27 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
   }
 
   async loadLevelDb(force: boolean = false, options?: IWorldProcessingOptions): Promise<boolean> {
-    if (!force && this._isDataLoaded) {
-      return true;
-    }
-
-    // Coalesce concurrent, non-forced loads. In the combined 3D + 2D map view the
-    // WorldViewer and WorldMap share this MCWorld instance and both call loadLevelDb
-    // during their async init. Returning the in-flight promise guarantees the
-    // LevelDB files are parsed and the chunk index built exactly once.
+    // All loads share one serialization point. Non-forced callers coalesce with
+    // the active load; forced callers wait for it, then perform their own reload.
     if (!force && this._loadLevelDbPromise) {
       return await this._loadLevelDbPromise;
     }
 
-    const loadPromise = this._loadLevelDbInternal(force, options);
-
-    if (!force) {
-      this._loadLevelDbPromise = loadPromise;
+    while (force && this._loadLevelDbPromise) {
+      try {
+        await this._loadLevelDbPromise;
+      } catch {
+        // A forced reload is the recovery attempt, so continue after the prior
+        // load settles even when that prior attempt failed.
+      }
     }
+
+    if (!force && this._isDataLoaded) {
+      return true;
+    }
+
+    const loadPromise = this._loadLevelDbInternal(force, options);
+    this._loadLevelDbPromise = loadPromise;
 
     try {
       return await loadPromise;
@@ -2831,8 +2878,9 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
     return await this.loadFromLevelDb(this.levelDb, options);
   }
 
-  async loadFromLevelDb(levelDb: LevelDb, options?: IWorldProcessingOptions): Promise<boolean> {
+  public async loadFromLevelDb(levelDb: LevelDb, options?: IWorldProcessingOptions): Promise<boolean> {
     this.levelDb = levelDb;
+    this._skipFullProcessingMode = options?.skipFullProcessing === true;
 
     // If skipFullProcessing is enabled, only build a minimal index
     // Chunks will be created on-demand when accessed
@@ -2865,6 +2913,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
     this._minZ = metrics.minZ;
     this._maxZ = metrics.maxZ;
     this._dimensionIdsInChunks = new Set(metrics.dimensionIds);
+    this._customDimensionChunkCount = metrics.customDimensionChunkCount;
     this._dimensionNameIdTable = undefined;
     this._hasDimensionNameIdTable = metrics.hasDimensionNameIdTable;
 
@@ -2902,7 +2951,12 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
 
     this.chunks = new Map();
     this.chunkCount = 0;
+    this._minX = undefined;
+    this._maxX = undefined;
+    this._minZ = undefined;
+    this._maxZ = undefined;
     this._dimensionIdsInChunks = new Set();
+    this._customDimensionChunkCount = 0;
     this._dimensionNameIdTable = undefined;
     this._hasDimensionNameIdTable = false;
     this._wasLoadTruncated = false;
@@ -2918,6 +2972,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
 
     // Track unique chunks we've seen (format: "dim_x_z")
     const seenChunks = new Set<string>();
+    const seenCustomDimensionChunks = new Set<string>();
 
     // Build index mapping chunk keys to their LevelDB key names for fast lookup
     const chunkKeyIndex = new Map<string, string[]>();
@@ -2952,10 +3007,12 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
       if (keyname === "DimensionNameIdTable") {
         const keyValue = this.levelDb.keys.get(keyname);
 
-        if (keyValue && typeof keyValue !== "boolean" && keyValue.value) {
-          this._parseDimensionNameIdTable(keyValue.value);
-        } else {
-          this._hasDimensionNameIdTable = true;
+        if (keyValue && typeof keyValue !== "boolean") {
+          if (keyValue.value) {
+            this._parseDimensionNameIdTable(keyValue.value);
+          } else {
+            this._hasDimensionNameIdTable = true;
+          }
         }
         continue;
       }
@@ -2964,61 +3021,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
       // We must NOT filter by first-byte ASCII range because chunk coordinate keys
       // are binary little-endian integers whose low byte can be any value (0-255),
       // including printable ASCII (32-126). For example, chunk X=32 has first byte 0x20 (space).
-      if (
-        keyname.startsWith("AutonomousEntities") ||
-        keyname.startsWith("schedulerWT") ||
-        keyname.startsWith("Overworld") ||
-        keyname.startsWith("BiomeData") ||
-        keyname.startsWith("digp") ||
-        keyname.startsWith("actorprefix") ||
-        keyname.startsWith("player") ||
-        keyname.startsWith("portals") ||
-        keyname.startsWith("LevelChunk") ||
-        keyname.startsWith("structuretemplate") ||
-        keyname.startsWith("~local_player") ||
-        keyname.startsWith("game_") ||
-        keyname.startsWith("CustomProperties") ||
-        keyname.startsWith("DynamicProperties") ||
-        keyname.startsWith("LevelSpawnWasFixed") ||
-        keyname.startsWith("VILLAGE_") ||
-        keyname.startsWith("gametestinstance_") ||
-        keyname.startsWith("tickingarea_") ||
-        keyname.startsWith("map_") ||
-        keyname.startsWith("scoreboard") ||
-        keyname.startsWith("SavedEntity") ||
-        keyname.startsWith("ServerMapRuntime") ||
-        keyname.startsWith("VillageRuntime") ||
-        keyname.startsWith("WorldFeatureRuntime") ||
-        keyname.startsWith("WorldGenerationRuntime") ||
-        keyname.startsWith("WorldStreamRuntime") ||
-        keyname.startsWith("BSharpRuntime") ||
-        keyname.startsWith("BadgerSynced") ||
-        keyname.startsWith("CinematicsRuntime") ||
-        keyname.startsWith("CustomGameOptions") ||
-        keyname.startsWith("DeckRuntime") ||
-        keyname.startsWith("EntityFactorySetup") ||
-        keyname.startsWith("GeologyRuntime") ||
-        keyname.startsWith("InvasionRuntime") ||
-        keyname.startsWith("MapRevealRuntime") ||
-        keyname.startsWith("RealmsStoriesData") ||
-        keyname.startsWith("mobevents") ||
-        keyname.startsWith("dimension") ||
-        keyname.startsWith("structureplacement") ||
-        keyname.startsWith("chunk_loaded_request") ||
-        keyname.startsWith("legacy_console_player") ||
-        keyname.startsWith("PosTrackDB") ||
-        keyname.startsWith("PositionTrackDB") ||
-        keyname.startsWith("OwnedEntitiesLimbo") ||
-        keyname.startsWith("MCeditMap") ||
-        keyname.startsWith("EDU_CurrentCodingURL") ||
-        keyname.startsWith("TheEnd") ||
-        keyname.startsWith("SST_") ||
-        keyname.startsWith("SUSP") ||
-        keyname.startsWith("neteaseData") ||
-        keyname.startsWith("scriptGid") ||
-        keyname.startsWith("Nether") ||
-        keyname.startsWith("game_flatworldlayers")
-      ) {
+      if (WorldDataMetricsReducer.isNamedWorldRecordKey(keyname)) {
         continue;
       }
 
@@ -3049,30 +3052,15 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
         continue;
       }
 
-      // Key format: [x:4 bytes][z:4 bytes][dim?:4 bytes][tag:1 byte][subchunk?:1 byte]
-      if (keyBytes.length >= 9 && keyBytes.length <= 14) {
-        const hasDimensionParam = keyBytes.length >= 13;
+      const chunkMetadata = this._recordDimensionChunkMetadata(keyBytes, seenCustomDimensionChunks);
+      if (chunkMetadata) {
+        const { x, z, chunkKey } = chunkMetadata;
 
-        const x = DataUtilities.getSignedInteger(keyBytes[0], keyBytes[1], keyBytes[2], keyBytes[3], true);
-        const z = DataUtilities.getSignedInteger(keyBytes[4], keyBytes[5], keyBytes[6], keyBytes[7], true);
-        let dim = 0;
-
-        if (hasDimensionParam) {
-          dim = DataUtilities.getSignedInteger(keyBytes[8], keyBytes[9], keyBytes[10], keyBytes[11], true);
-
-          // Track all dimension IDs, including custom dimensions (>= 1000)
-          this._dimensionIdsInChunks.add(dim);
-
-          if (dim < 0 || dim > 2) {
-            continue; // Skip custom/invalid dimensions from chunk index
-          }
-        } else {
-          // 9/10-byte keys are overworld (dim 0)
-          this._dimensionIdsInChunks.add(0);
+        if (!chunkMetadata.includeInWorldMetrics) {
+          continue; // Skip custom/invalid dimensions from chunk index
         }
 
         // Track unique chunks
-        const chunkKey = `${dim}_${x}_${z}`;
         if (!seenChunks.has(chunkKey)) {
           seenChunks.add(chunkKey);
           this.chunkCount++;
@@ -3370,6 +3358,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
     ids: ReadonlySet<number>;
     nameIdTable: ReadonlyMap<string, number> | undefined;
     hasNameIdTable: boolean;
+    customDimensionChunkCount: number;
   }> {
     if (!this._isDataLoaded) {
       // Cheapest path: walk LevelDB key names only. Populates
@@ -3383,6 +3372,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
       ids: this._dimensionIdsInChunks,
       nameIdTable: this._dimensionNameIdTable,
       hasNameIdTable: this._hasDimensionNameIdTable,
+      customDimensionChunkCount: this._customDimensionChunkCount,
     };
   }
 
@@ -3508,7 +3498,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
    */
   clearLevelDbData() {
     if (this.levelDb) {
-      this.levelDb.keys.clear();
+      this.levelDb.clearLoadedKeys();
     }
   }
 
@@ -3552,6 +3542,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
 
     // Reset state
     this._isDataLoaded = false;
+    this._skipFullProcessingMode = false;
     this._wasLoadTruncated = false;
     this.chunkCount = 0;
     this._minX = undefined;
@@ -3703,7 +3694,12 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
 
     this.chunks = new Map();
     this.chunkCount = 0;
+    this._minX = undefined;
+    this._maxX = undefined;
+    this._minZ = undefined;
+    this._maxZ = undefined;
     this._dimensionIdsInChunks = new Set();
+    this._customDimensionChunkCount = 0;
     this._dimensionNameIdTable = undefined;
     this._hasDimensionNameIdTable = false;
     this._wasLoadTruncated = false;
@@ -3716,6 +3712,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
     const levelDbKeysArray = Array.from(this.levelDb.keys.keys());
     const totalKeys = levelDbKeysArray.length;
     let processedKeys = 0;
+    const seenCustomDimensionChunks = new Set<string>();
 
     // Whether to delete keys from LevelDb after processing to reduce memory
     // Default is true for memory optimization
@@ -3757,19 +3754,42 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
         // call to re-parse all .ldb files from scratch — a 5-6 GB RSS
         // regression we don't want.
         this._wasLoadTruncated = true;
+        // Complete the lightweight dimension metadata scan before dropping the
+        // remaining payloads. Validation may stop building WorldChunk objects,
+        // but feature-adoption metadata must still describe the entire world.
+        for (let remainingIndex = processedKeys - 1; remainingIndex < totalKeys; remainingIndex++) {
+          const remainingKeyName = levelDbKeysArray[remainingIndex];
+          const remainingKeyValue = this.levelDb.keys.get(remainingKeyName);
+
+          if (!remainingKeyValue || typeof remainingKeyValue === "boolean") {
+            continue;
+          }
+
+          if (remainingKeyName === "DimensionNameIdTable") {
+            if (remainingKeyValue.value) {
+              this._parseDimensionNameIdTable(remainingKeyValue.value);
+            } else {
+              this._hasDimensionNameIdTable = true;
+            }
+            continue;
+          }
+
+          if (WorldDataMetricsReducer.isNamedWorldRecordKey(remainingKeyName)) {
+            continue;
+          }
+
+          if (remainingKeyValue.keyBytes) {
+            this._recordDimensionChunkMetadata(remainingKeyValue.keyBytes, seenCustomDimensionChunks);
+          }
+        }
+
         // Aggressively drop any LevelKeyValue.value buffers we'll never
         // read. The remaining keys in `this.levelDb.keys` carry the
         // decompressed bytes for hundreds of thousands of records and
         // pin ~hundreds of MB of external memory through the rest of
         // validation. We don't need them — by definition we've bailed.
         if (clearKeysAfterProcess && this.levelDb) {
-          for (const remainingKey of this.levelDb.keys.keys()) {
-            const kv = this.levelDb.keys.get(remainingKey);
-            if (kv && typeof kv !== "boolean") {
-              kv.clearAllData();
-            }
-            this.levelDb.keys.delete(remainingKey);
-          }
+          this.levelDb.clearLoadedKeys(false);
         }
         break;
       }
@@ -4026,29 +4046,27 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
         (keyname.length === 9 || keyname.length === 10 || keyname.length === 13 || keyname.length === 14)
       ) {
         const keyBytes = keyValue.keyBytes;
-        const hasDimensionParam = keyname.length >= 13;
 
         Log.assertDefined(keyBytes);
 
         if (keyBytes) {
-          const x = DataUtilities.getSignedInteger(keyBytes[0], keyBytes[1], keyBytes[2], keyBytes[3], true);
-          const z = DataUtilities.getSignedInteger(keyBytes[4], keyBytes[5], keyBytes[6], keyBytes[7], true);
-          let dim = 0;
-
-          if (hasDimensionParam) {
-            dim = DataUtilities.getSignedInteger(keyBytes[8], keyBytes[9], keyBytes[10], keyBytes[11], true);
-
-            // Track all dimension IDs, including custom dimensions (>= 1000)
-            this._dimensionIdsInChunks.add(dim);
-
-            if (dim < 1 || dim > 2) {
-              // note overworld dimension = 0, but should be omitted so we should not see overworld = 0.
-              // Custom dimensions (>= 1000) are also skipped from chunk processing.
-              continue;
+          const chunkMetadata = this._recordDimensionChunkMetadata(keyBytes, seenCustomDimensionChunks);
+          if (!chunkMetadata) {
+            if (clearKeysAfterProcess) {
+              this.levelDb.deleteKey(keyname);
             }
-          } else {
-            // 9/10-byte keys are overworld (dim 0)
-            this._dimensionIdsInChunks.add(0);
+            continue;
+          }
+
+          const { x, z, dimension: dim } = chunkMetadata;
+
+          if (!chunkMetadata.includeInWorldMetrics) {
+            // Dimension-encoded overworld and custom dimensions are excluded
+            // from the normal chunk index, but still contribute metadata above.
+            if (clearKeysAfterProcess) {
+              this.levelDb.deleteKey(keyname);
+            }
+            continue;
           }
 
           if (this._minX === undefined || x * 16 < this._minX) {
@@ -4119,7 +4137,7 @@ export default class MCWorld implements IGetSetPropertyObject, IDimension, IErro
       // Clear the key from LevelDb to reduce memory usage
       // The key data has been handed off to WorldChunks or is no longer needed
       if (clearKeysAfterProcess) {
-        this.levelDb.keys.delete(keyname);
+        this.levelDb.deleteKey(keyname);
       }
     }
 

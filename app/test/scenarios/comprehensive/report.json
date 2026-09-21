@@ -3451,7 +3451,7 @@
       "gId": "SCRIPTMODULE",
       "gIx": 100,
       "p": "/behavior_packs/comprehensive_bp/manifest.json",
-      "d": "2.9.0-beta",
+      "d": "2.11.0-beta",
       "iId": "@minecraft/server"
     },
     {

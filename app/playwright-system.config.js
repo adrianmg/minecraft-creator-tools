@@ -6,6 +6,7 @@ import { defineConfig, devices } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./src/testweb",
+  testIgnore: ["**/ServerUI.spec.ts", "**/ServerApi.spec.ts"],
   outputDir: "./debugoutput/playwright-test-system-results",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,

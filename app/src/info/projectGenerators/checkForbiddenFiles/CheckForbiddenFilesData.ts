@@ -2,6 +2,9 @@
 // Licensed under the MIT License.
 import { TestDefinition } from "../../tests/TestDefinition";
 import { PackType } from "../../../minecraft/Pack";
+import { InfoItemType } from "../../IInfoItemData";
+import { ProjectInfoSuite } from "../../IProjectInfoData";
+import { defineValidationRule, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export type PackageType = PackType | "WorldTemplate";
 
@@ -12,12 +15,39 @@ export enum ForbiddenTest {
   ContainsInvalidCharacter = "ContainsInvalidCharacter",
 }
 
+const rule = (spec: { ruleIndex: number; name: string; title: string }) =>
+  defineValidationRule({
+    generatorId: "FORBFILE",
+    ruleIndex: spec.ruleIndex,
+    name: spec.name,
+    title: spec.title,
+    severities: [InfoItemType.error],
+    suites: [ProjectInfoSuite.defaultInDevelopment],
+    source: {
+      file: "app/src/info/projectGenerators/checkForbiddenFiles/CheckForbiddenFilesData.ts",
+      symbol: "ForbiddenTests",
+    },
+  });
+
 export const ForbiddenTests: Record<ForbiddenTest, TestDefinition> = {
+  // FailedToReadFile is a reserved slot with no emission site in the
+  // generator, so it is not part of the catalogable rule inventory below.
   FailedToReadFile: { id: 101, title: "Failed To Read File" },
-  ExtNotInAllowList: { id: 102, title: "File Does Not Have Allowed Extension" },
-  InvalidFileName: { id: 103, title: "File Name Is Blocked" },
-  ContainsInvalidCharacter: { id: 104, title: "File Name Contains Invalid Character" },
+  ExtNotInAllowList: rule({ ruleIndex: 102, name: "extNotInAllowList", title: "File Does Not Have Allowed Extension" }),
+  InvalidFileName: rule({ ruleIndex: 103, name: "invalidFileName", title: "File Name Is Blocked" }),
+  ContainsInvalidCharacter: rule({
+    ruleIndex: 104,
+    name: "containsInvalidCharacter",
+    title: "File Name Contains Invalid Character",
+  }),
 } as const;
+
+/** The FORBFILE validation-rule inventory (see CheckForbiddenFilesGenerator). */
+export const ForbiddenFilesValidationRules: readonly ValidationRuleDefinition[] = [
+  ForbiddenTests.ExtNotInAllowList as ValidationRuleDefinition,
+  ForbiddenTests.InvalidFileName as ValidationRuleDefinition,
+  ForbiddenTests.ContainsInvalidCharacter as ValidationRuleDefinition,
+];
 
 const SharedBPRPExtensions = [
   ".json",

@@ -133,6 +133,49 @@ export default class ServerPropertiesManager {
     }
   }
 
+  /**
+   * Read the PERSISTED allow-inbound-script-debugging value from
+   * server.properties. The in-memory field above only reflects what this
+   * manager intends to write - it is never populated from the file - so
+   * verifying what BDS will actually read (e.g., a hand-edited value after
+   * the last write) must consult the file itself. Returns undefined when the
+   * file or the key is absent.
+   */
+  public async readPersistedAllowInboundScriptDebugging(): Promise<boolean | undefined> {
+    return this.readPersistedBoolean("allow-inbound-script-debugging");
+  }
+
+  /**
+   * Read the PERSISTED allow-outbound-script-debugging value - the setting
+   * that gates the outbound `script debugger connect` direction the managed
+   * debugger flow uses by default.
+   */
+  public async readPersistedAllowOutboundScriptDebugging(): Promise<boolean | undefined> {
+    return this.readPersistedBoolean("allow-outbound-script-debugging");
+  }
+
+  private async readPersistedBoolean(key: string): Promise<boolean | undefined> {
+    if (this._serverFolder === undefined) {
+      return undefined;
+    }
+
+    const file = this._serverFolder.ensureFile("server.properties");
+
+    await file.loadContent(true);
+
+    if (typeof file.content !== "string") {
+      return undefined;
+    }
+
+    const match = file.content.match(new RegExp(`^[ \\t]*${key}[ \\t]*=[ \\t]*([^\\r\\n]*)`, "m"));
+
+    if (!match) {
+      return undefined;
+    }
+
+    return match[1].trim().toLowerCase() === "true";
+  }
+
   public async writeFile() {
     if (this._serverFolder === undefined) {
       return;

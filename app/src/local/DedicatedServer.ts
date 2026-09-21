@@ -184,29 +184,69 @@
  * | "passed test: ..."          | GameTest passed event                    |
  * | "failed test: ..."          | GameTest failed event                    |
  *
+ * **Process identity invariant** (bug fixed Aug 2026 - keep this!): a restart
+ * can launch a replacement process while the old process is still stopping
+ * (stopServer() writes "stop" and returns without waiting for exit), so the
+ * old stdout stream may still be draining buffered lines and the old process
+ * has a close event yet to deliver. Every state mutation is therefore gated
+ * on identity: directOutput() ignores state-mutating lines whose stream id
+ * has been superseded (a delayed "Server started" from the old process must
+ * not re-run debugger setup; a delayed "Quit correctly" must not
+ * continueStopServer() the replacement's process handle away), and the close
+ * handler registered by attachProcess() is bound to its specific
+ * ChildProcess and no-ops unless that process is still #activeProcess.
+ * Superseded output is still recorded/forwarded for display.
+ *
  * ## Script Debugger Integration
  *
- * After server start, DedicatedServer can connect to the Minecraft script debugger:
+ * The debugger flow follows an explicit lifecycle model (DebuggerLifecycle.ts):
+ * configuring -> startingListener -> waitingForReadiness -> connectingTcp ->
+ * negotiating -> selectingTarget -> resuming -> connected, with reconnecting /
+ * stopping / failed side states. Stage changes are dispatched via
+ * onDebugStageChanged so the Electron/web UX can show precise progress and
+ * stage-specific recovery actions.
  *
- * 1. Send `script debugger listen 19144` command to server (if enableDebugger=true)
- * 2. Wait for "Debugger listening" message from Minecraft (confirms listener is ready)
- * 3. Connect MinecraftDebugClient to localhost:19144 (if enableDebuggerStreaming=true)
- * 4. Receive profiling stats (tick timing, script execution times)
- * 5. Forward debug events to ServerManager → HttpServer → WebSocket clients
+ * 1. On "Server started": verify server.properties debugger settings
+ *    (allow-inbound-script-debugging), then wait DEBUG_LISTEN_DELAY_MS
+ * 2. Reserve a collision-free dynamic debug port (DebugPortRegistry;
+ *    preferred: base port + 12, e.g., 19144 for slot 0)
+ * 3. Send `script debugger listen <port>` and wait for the parsed
+ *    "Debugger listening" confirmation. If BDS never confirms (or prints
+ *    "Failed to start debugger"), the flow FAILS with a specific error kind -
+ *    there is deliberately no success-shaped fallback timeout
+ * 4. Connect MinecraftDebugClient to localhost:<port> (if
+ *    enableDebuggerStreaming=true); the client handles handshake, passcode,
+ *    target module selection, and resume
+ * 5. Forward debug events to ServerManager → HttpServer/IPC → clients
  *
- * **Configuration (Jan 2026 Update)**:
- * - `enableDebugger` (default: true): Whether BDS enables script debugger on port 19144
+ * **Configuration**:
+ * - `enableDebugger` (default: true): Whether BDS enables script debugger listening
  * - `enableDebuggerStreaming` (default: true for serve command): Whether we connect and stream debug stats
- *   The serve command enables streaming by default to provide real-time stats in the web UI.
  *
- * **Debug Client Connection Flow**:
- * - 3 seconds after "Server started" message: send `script debugger listen` command
- * - Wait for "Debugger listening" message from Minecraft stdout (or 10s timeout)
- * - Connect MinecraftDebugClient to localhost:debugPort
- * - Uses TCP keep-alive (30s) to detect dead connections
- * - Retries up to 5 times with exponential backoff on connection failure
- * - Has 10-second handshake timeout if server doesn't respond with ProtocolEvent
+ * **Cleanup and reconnect invariants** (bugs fixed Aug 2026 - keep these!):
+ * - All debugger timers are tracked in fields and cleared in
+ *   resetDebuggerRuntimeState(); anonymous fire-and-forget timers previously
+ *   leaked across stop/restart and poked dead server runs
+ * - #debugClient is cleared on EVERY disconnect path (previously a dropped
+ *   connection left a stale reference that blocked reconnection forever)
+ * - Dropped connections reconnect with exponential backoff (max 5 attempts);
+ *   passcode/protocol-mismatch failures fail fast instead of retrying
+ * - stopServer() marks the lifecycle "stopping" BEFORE writing "stop" so the
+ *   imminent socket close is not misclassified as a failure
+ * - A handshake that completes with NO script module to select does not reset
+ *   the reconnect budget: BDS closes module-less sessions right after the
+ *   handshake, and resetting on that short-lived "connected" produced an
+ *   endless connect/drop churn. The drop is classified moduleSelection (not
+ *   prematureClose) so the user sees the actionable cause (add a behavior
+ *   pack with a script module)
  * - Session info exposed via HTTP API: /api/{slot}/status includes debugConnectionState
+ * - Reattach vs. in-flight attach race: a user-driven reattach can discard an
+ *   automatic attach whose dial is still retrying. disconnect() cancels that
+ *   dial (MinecraftDebugClient aborts its retry loop and destroys the pending
+ *   socket), and every subscriber/post-await in connectDebugClient() is
+ *   guarded by `#debugClient === client` identity so a superseded client can
+ *   never mutate or clear its replacement's state, occupy BDS's single
+ *   debugger slot, or cause a false external-owner classification.
  *
  * ## Related Files
  *
@@ -266,8 +306,28 @@ import IActionSetData from "../actions/IActionSetData";
 import IStorage from "../storage/IStorage";
 import NodeFile from "./NodeFile";
 import ZipStorage from "../storage/ZipStorage";
-import MinecraftDebugClient from "../debugger/MinecraftDebugClient";
-import { IStatData, IDebugSessionInfo, IProfilerCaptureEvent } from "../debugger/IMinecraftDebugProtocol";
+import MinecraftDebugClient, { PROTOCOL_HANDSHAKE_TIMEOUT_MS } from "../debugger/MinecraftDebugClient";
+import {
+  IStatData,
+  IDebugSessionInfo,
+  IProfilerCaptureEvent,
+  IDiagnosticsTabDescriptor,
+  DebugAttachFailureReason,
+  DebugConnectionState,
+  DebugOwnershipState,
+} from "../debugger/IMinecraftDebugProtocol";
+import { deriveDebugOwnership } from "../debugger/DiagnosticsSchemaUtilities";
+import { ISlotConfig } from "../app/CreatorToolsAuthentication";
+import DebuggerLifecycleTracker, {
+  DebuggerFailureKind,
+  DebuggerLifecycleStage,
+  IDebuggerDiagnostics,
+  IDebuggerStageEventData,
+  classifyDebugClientDisconnectReason,
+  classifyDebuggerListenFailure,
+  sanitizeDebuggerDiagnosticText,
+} from "../debugger/DebuggerLifecycle";
+import DebugPortRegistry, { IDebugPortReservation } from "../debugger/DebugPortRegistry";
 import { WorldBackupType, IBackupResult } from "./IWorldBackupData";
 
 export enum DedicatedServerStatus {
@@ -302,6 +362,23 @@ const PLAYER_POSITION_POLL_INTERVAL = 5000;
 // Minimum distance (in blocks) to consider a "major" move worth reporting
 const PLAYER_MOVE_THRESHOLD = 2;
 
+// Delay after "Server started" before issuing `script debugger listen`, so BDS
+// finishes its startup work before taking the listener command.
+const DEBUG_LISTEN_DELAY_MS = 3000;
+// How long to wait for the parsed "Debugger listening" confirmation before the
+// flow is marked failed. There is deliberately no success-shaped fallback: if
+// BDS never confirms, we fail with a listener-readiness error, we do not
+// pretend the listener is up and surface a misleading TCP error later.
+const DEBUG_LISTENER_READY_TIMEOUT_MS = 15000;
+// Reconnect backoff for dropped debug connections while the server still runs
+const DEBUG_RECONNECT_MAX_ATTEMPTS = 5;
+const DEBUG_RECONNECT_BASE_DELAY_MS = 2000;
+
+// How long a restart waits for the previous child process to terminate
+// before failing. stopServer force-kills after 10s, so exit is expected well
+// inside this window; exceeding it means even SIGKILL did not take.
+const PREVIOUS_PROCESS_EXIT_TIMEOUT_MS = 15000;
+
 export default class DedicatedServer {
   #pendingCommands: string[] = [];
   #pendingRequestIds: string[] = [];
@@ -329,29 +406,123 @@ export default class DedicatedServer {
   startConfigurationHash?: string = undefined;
   #port?: number;
   #activeProcess: ChildProcess | null = null;
+  // The in-flight stop finalization (process exit -> finalizeStopServer) of
+  // the run being torn down. A restart must await this - not just the old
+  // process's exit - because the same exit unblocks both the restart's
+  // termination wait and the old run's finalization, whose backup can still
+  // be pending when the replacement launches (see startServer).
+  #stopFinalization: Promise<void> | undefined;
+  // Generation of the published finalization; the settle handlers compare
+  // this token (not promise identity) to decide whether they still own the
+  // published slot.
+  #stopFinalizationId: number = 0;
+  // True while startServer's deliberate-restart teardown owns the old run's
+  // lifecycle. handleClose then publishes its finalization for the restart
+  // to await instead of running unexpected-stop bookkeeping and the
+  // auto-restart loop against the incoming replacement.
+  #restartInProgress: boolean = false;
+  /**
+   * Monotonic id of the CURRENT stdout stream (bumped each directOutput
+   * attach). Lines from a superseded stream compare unequal and may not
+   * mutate server state - see directOutput.
+   */
+  #outputStreamId: number = 0;
+
+  /**
+   * The PERSISTED allow-inbound/outbound-script-debugging values the last
+   * debugger setup actually read and acted on (beginDebuggerSetup's
+   * settings verification). undefined until a setup has read the file, or
+   * when the file was unreadable / the key absent. Diagnostics report
+   * THESE - the inputs of the runtime decision - never the in-memory
+   * ServerPropertiesManager fields, which are write-intent defaults that
+   * can disagree with what is on disk (a persisted false correctly fails
+   * the settings stage while the in-memory default still claims true).
+   * Cleared when a new run begins; they survive stop so a failed run's
+   * diagnostics keep describing the values that failed it.
+   */
+  #effectiveInboundScriptDebugging: boolean | undefined;
+  #effectiveOutboundScriptDebugging: boolean | undefined;
   #status: DedicatedServerStatus = DedicatedServerStatus.stopped;
 
   // Debug client for connecting to the Minecraft script debugger
   #debugClient: MinecraftDebugClient | undefined;
   // enableDebugger: Whether BDS enables script debugger listening
-  // The debug port is calculated dynamically based on the slot (base port + 12)
+  // The debug port is selected dynamically (preferred: base port + 12)
   #enableDebugger: boolean = true;
   // enableDebuggerStreaming: Whether we connect to the debug port and stream stats to web console
   // Enabled by default. Set worldSettings.enableDebuggerStreaming=false to disable.
   #enableDebuggerStreaming: boolean = true;
-  // Flag to track when we're waiting for the debug listener to be ready
-  // Set to true after sending 'script debugger listen', cleared when we receive 'Debugger listening' message
+  // Debug connection direction. true (default): MCT listens and BDS dials it
+  // (`script debugger connect`) - required for current BDS builds, whose
+  // inbound `script debugger listen` listener flaps (accept-then-reset every
+  // few ticks) and cannot hold a connection. false: legacy inbound direction
+  // (BDS listens, MCT dials), kept for older servers and for tests that
+  // exercise the listen-confirmation flow.
+  #debugOutboundConnect: boolean = true;
+  // Explicit lifecycle/state model for the debugger flow (see DebuggerLifecycle.ts)
+  #debuggerLifecycle = new DebuggerLifecycleTracker();
+  // Set after 'script debugger listen' until BDS confirms "Debugger listening"
   #awaitingDebuggerListening: boolean = false;
-  // Flag to track if the debug listener is ready but we haven't connected yet
-  // Used when delaying debug client connection until a player joins
+  // Set once BDS has confirmed the listener is ready
   #debugListenerReady: boolean = false;
-  // Whether to delay debug client connection until a player joins
-  // Note: This was used during debugging but the real fix was sending 'resume' after
-  // protocol handshake (see MinecraftDebugClient._handleProtocolEvent)
-  #delayDebugClientUntilPlayerJoins: boolean = false;
-  // Track if at least one player has joined since server start
-  // Used to know when it's safe to start debug streaming
-  #hasPlayerJoined: boolean = false;
+  // Single-flight guard for listener startup: concurrent entries (a user
+  // Retry racing the reconnect timer) join this promise instead of
+  // double-reserving ports and double-issuing listen commands.
+  #debugListenerStartPromise: Promise<void> | undefined;
+  // Generation token for listener attempts. Advanced when an attempt begins
+  // and whenever an attempt is invalidated (stop/restart/retry), so a
+  // superseded attempt's late reservation is released, its armed timeout
+  // no-ops, and stale BDS confirmation/failure lines are ignored instead of
+  // acting on the wrong attempt's reservation.
+  #debugListenerAttemptId: number = 0;
+  // Dynamically reserved, collision-free debug port (see DebugPortRegistry).
+  // Held as a tokenized handle so a superseded attempt's late release can
+  // never drop a newer attempt's reservation for the same port.
+  #debugPortReservation: IDebugPortReservation | undefined;
+  // The debug port most recently ATTEMPTED by the listener flow. Survives
+  // reservation release (and stop/reset) so the synchronous failed stage
+  // event, the late-mount status snapshot, and diagnostics report the port
+  // the attempt actually used - not the preferred-port fallback the debugPort
+  // getter would return once #debugPortReservation is cleared. Overwritten by
+  // the next reservation, and cleared when a NEW server run begins
+  // (startServer) so a fresh run's pre-reservation events never report the
+  // previous run's port.
+  #lastAttemptedDebugPort: number | undefined;
+  // Timers owned by the debugger flow - always cleared in resetDebuggerRuntimeState
+  // so a stop/restart never leaves a stale timer poking a new (or dead) server run
+  #debugListenDelayTimer: NodeJS.Timeout | undefined;
+  #debugListenerReadyTimeout: NodeJS.Timeout | undefined;
+  #debugReconnectTimer: NodeJS.Timeout | undefined;
+  #debugReconnectAttempts: number = 0;
+  // True when the CURRENT client's handshake completed without any script
+  // module to select (plugins=0). BDS closes such sessions right after the
+  // handshake, so the drop must be classified as moduleSelection - and the
+  // reconnect counter must NOT be reset by that short-lived "connected" -
+  // or the flow churns connect/drop forever instead of failing actionably.
+  #debugSessionMissingTargetModule: boolean = false;
+  // Debounces duplicate connect attempts (readiness message and retry can race)
+  #debugConnectInFlight: boolean = false;
+  // BDS version parsed from the "Version: x.y.z" startup line, for diagnostics
+  #bdsVersion: string | undefined;
+  // Typed reason of the last failed debug attach attempt (see
+  // DebugAttachFailureReason); undefined when the last attempt succeeded.
+  #debugAttachFailure: DebugAttachFailureReason | undefined;
+  // True only when Minecraft explicitly confirmed the debug endpoint
+  // ("Debugger listening" in the inbound direction). Ownership classification
+  // needs this real confirmation - readiness inferred any other way must not
+  // set it.
+  #debugListenerConfirmed: boolean = false;
+  // The in-flight reattach attempt, if any. Concurrent callers (e.g., the
+  // user clicking "Check again" repeatedly, or two panels retrying at once)
+  // share this promise and all receive the settled outcome of the one real
+  // attempt instead of a premature state snapshot.
+  #debugReattachPromise: Promise<{ connected: boolean; ownership: DebugOwnershipState }> | undefined;
+  // Generation of the connect attempt that currently OWNS the in-flight
+  // latch. Cancellation paths (reattach, runtime reset) advance it while
+  // releasing the latch, so a replacement can dial immediately; the canceled
+  // attempt's finally then sees a foreign generation and must NOT release -
+  // otherwise its late settlement would clear the replacement's latch.
+  #debugConnectAttempt: number = 0;
 
   // Whether to launch BDS in Minecraft Editor mode (passes Editor=true arg)
   #editorMode: boolean = false;
@@ -383,14 +554,28 @@ export default class DedicatedServer {
 
   /**
    * Get the script debugger port for this server instance.
-   * The debug port is the base port + 12, ensuring each slot has a unique debug port.
-   * Slot 0: port 19132 -> debug port 19144
-   * Slot 1: port 19164 -> debug port 19176
+   * Once the listener flow has reserved a collision-free dynamic port, that
+   * port is returned. After a failed attempt released its reservation, the
+   * port that attempt ACTUALLY used is still reported (failure events and
+   * late-mount snapshots must not misreport the preferred port - the exact
+   * misleading diagnosis dynamic allocation exists to avoid). Before any
+   * reservation, this is the preferred port: base port + 12, which gives
+   * each slot a unique debug port window.
+   * Slot 0: port 19132 -> preferred debug port 19144
+   * Slot 1: port 19164 -> preferred debug port 19176
    * etc.
    */
   public get debugPort(): number {
+    if (this.#debugPortReservation !== undefined) {
+      return this.#debugPortReservation.port;
+    }
+
+    if (this.#lastAttemptedDebugPort !== undefined) {
+      return this.#lastAttemptedDebugPort;
+    }
+
     const basePort = this.#port ?? 19132;
-    return basePort + 12; // Debug port offset is 12 from base port
+    return basePort + 12; // Preferred debug port offset is 12 from base port
   }
 
   public get lastResult() {
@@ -482,6 +667,8 @@ export default class DedicatedServer {
   #onDebugPaused = new EventDispatcher<DedicatedServer, string>();
   #onDebugResumed = new EventDispatcher<DedicatedServer, void>();
   #onProfilerCapture = new EventDispatcher<DedicatedServer, IProfilerCaptureEvent>();
+  #onDebugStageChanged = new EventDispatcher<DedicatedServer, IDebuggerStageEventData>();
+  #onDebugSchema = new EventDispatcher<DedicatedServer, IDiagnosticsTabDescriptor[]>();
 
   #updateIds: { [id: string]: boolean } = {};
 
@@ -503,6 +690,10 @@ export default class DedicatedServer {
     this.config.addCartoConfig();
 
     this.properties = new ServerPropertiesManager();
+
+    this.#debuggerLifecycle.onStageChanged.subscribe((_tracker, data) => {
+      this.#onDebugStageChanged.dispatch(this, { ...data, debugPort: this.debugPort });
+    });
 
     this.handleClose = this.handleClose.bind(this);
     this.doRunningBackup = this.doRunningBackup.bind(this);
@@ -626,8 +817,81 @@ export default class DedicatedServer {
     return this.#onProfilerCapture.asEvent();
   }
 
+  public get onDebugStageChanged() {
+    return this.#onDebugStageChanged.asEvent();
+  }
+
+  public get onDebugSchema() {
+    return this.#onDebugSchema.asEvent();
+  }
+
   public get debugClient() {
     return this.#debugClient;
+  }
+
+  public get debuggerLifecycle() {
+    return this.#debuggerLifecycle;
+  }
+
+  /**
+   * Who currently owns the single-client Minecraft debug endpoint for this
+   * server. "attachedExternally" is reported only on positive contention
+   * evidence: Minecraft confirmed its listener AND our socket was accepted
+   * but closed before the protocol handshake. Transport-level failures
+   * (refused, timeout, listener races, BDS shutting down) classify as
+   * "unknown" so the UI offers a retry instead of blaming another debugger.
+   * See deriveDebugOwnership for the classification rules.
+   */
+  public get debugOwnership(): DebugOwnershipState {
+    return deriveDebugOwnership({
+      clientConnected: this.#debugClient?.isConnected === true,
+      attachFailure: this.#debugAttachFailure,
+      listenerConfirmed: this.#debugListenerConfirmed,
+      debuggerEnabled: this.#enableDebugger,
+      streamingEnabled: this.#enableDebuggerStreaming,
+    });
+  }
+
+  /** Typed reason of the last failed debug attach attempt, if any. */
+  public get debugAttachFailure(): DebugAttachFailureReason | undefined {
+    return this.#debugAttachFailure;
+  }
+
+  /**
+   * Snapshot of the current debug session as slot-config fields: the
+   * hydration payload for UIs that mount AFTER the session was established
+   * (the diagnostics panel is only mounted when its tab is open, so live
+   * debugConnected/debugSchema events may already be long gone). Served by
+   * both the web /status endpoint and the Electron debug-status IPC so the
+   * two modes hydrate from the identical source of truth. Includes the
+   * debugger lifecycle snapshot (stage, failure kind, sanitized message) so
+   * a flow that settled - e.g. terminally failed - before the panel mounted
+   * still surfaces its error and recovery actions.
+   */
+  public getDebugSlotConfig(): ISlotConfig {
+    const sessionInfo = this.#debugClient?.sessionInfo;
+
+    return {
+      debuggerEnabled: this.#enableDebugger,
+      debuggerStreamingEnabled: this.#enableDebuggerStreaming,
+      debugConnectionState: sessionInfo?.state ?? "disconnected",
+      debugProtocolVersion: sessionInfo?.protocolVersion,
+      debugLastStatTick: sessionInfo?.lastStatTick,
+      debugErrorMessage: sessionInfo?.errorMessage,
+      debugStage: this.#debuggerLifecycle.stage,
+      debugFailureKind: this.#debuggerLifecycle.failureKind,
+      debugStageMessage: this.#debuggerLifecycle.errorMessage,
+      debugTargetModuleUuid: sessionInfo?.targetModuleUuid,
+      debugPlugins: sessionInfo?.plugins,
+      debugHost: sessionInfo?.host,
+      // A live session reports the port it actually used; otherwise fall
+      // back to the dynamically derived debug port so pre-connect/terminal
+      // failure snapshots still name the port the attempt used.
+      debugPort: sessionInfo?.port ?? this.debugPort,
+      debugCapabilities: sessionInfo?.capabilities,
+      debugOwnership: this.debugOwnership,
+      debugSchema: sessionInfo?.schema,
+    };
   }
 
   public get debuggerEnabled() {
@@ -644,6 +908,14 @@ export default class DedicatedServer {
 
   public set debuggerStreamingEnabled(value: boolean) {
     this.#enableDebuggerStreaming = value;
+  }
+
+  public get debugOutboundConnect() {
+    return this.#debugOutboundConnect;
+  }
+
+  public set debugOutboundConnect(value: boolean) {
+    this.#debugOutboundConnect = value;
   }
 
   /**
@@ -1014,7 +1286,15 @@ export default class DedicatedServer {
     }
   }
 
-  async startServer(restartIfAlreadyRunning: boolean, start: IMinecraftServerStart | undefined) {
+  /**
+   * Start (or restart) the BDS process. Returns true when a launch was
+   * initiated (or a server is already running and no restart was requested),
+   * false when a startup preflight check failed (missing executable, invalid
+   * signature, non-Microsoft signer) - those paths return NORMALLY after
+   * setting status = stopped and dispatching onServerError, so callers must
+   * check this outcome (not just resolution) before reporting success.
+   */
+  async startServer(restartIfAlreadyRunning: boolean, start: IMinecraftServerStart | undefined): Promise<boolean> {
     if (start === undefined) {
       start = {
         worldSettings: this.#dsm.creatorTools.worldSettings,
@@ -1023,16 +1303,88 @@ export default class DedicatedServer {
       };
     }
 
+    // Captured BEFORE any stop is delivered so the waits below can target
+    // the SPECIFIC old child even after graceful teardown clears the handle.
+    const previousProcess = this.#activeProcess;
+    let deliberateRestart = false;
+
     if (
       this.#status === DedicatedServerStatus.launching ||
       this.#status === DedicatedServerStatus.started ||
       this.#status === DedicatedServerStatus.starting
     ) {
       if (restartIfAlreadyRunning) {
-        await this.stopServer();
+        // From here until the old run's teardown below completes, its close
+        // event must not run unexpected-stop bookkeeping or the auto-restart
+        // loop - this restart owns the teardown (see handleClose).
+        deliberateRestart = true;
+        this.#restartInProgress = true;
       } else {
-        return;
+        return true;
       }
+    }
+
+    // Serialize the launch on RUN IDENTITY, not on #status: whether an old
+    // run still owns the slot is a property of #activeProcess and
+    // #stopFinalization. Deployment flips #status to stopped before calling
+    // stopServer()/startServer(true), so a wait placed inside the
+    // status-gated branch above would be skipped entirely on that path and
+    // the replacement could launch while the old process still held the
+    // slot's files and ports (and before its finalization/backup completed).
+    try {
+      if (deliberateRestart) {
+        await this.stopServer();
+      }
+
+      // stopServer only DELIVERS the stop command - the old child is still
+      // exiting when it returns. Spawning the replacement while the old
+      // process lives would have two BDS processes contending for the slot,
+      // and would let the old process's buffered output/close callbacks race
+      // the replacement's startup (they are identity-guarded, but the
+      // contention itself makes a restart nondeterministic). Await the
+      // SPECIFIC old child's termination - bounded, because stopServer
+      // force-kills after 10s; a process that survives even that fails the
+      // start rather than proceeding into a doubly-owned slot.
+      if (previousProcess) {
+        try {
+          await DedicatedServer.awaitProcessTermination(previousProcess, PREVIOUS_PROCESS_EXIT_TIMEOUT_MS);
+        } catch (e) {
+          const errorMsg = String(e);
+
+          Log.fail(errorMsg);
+          this.#onServerError.dispatch(this, errorMsg);
+          return false;
+        }
+      }
+
+      // The same exit that released the wait above also unblocks the old
+      // run's finalization (continueStopServer/handleClose ->
+      // finalizeStopServer), which can still be pausing in doBackup().
+      // Launching now would let that finalization later remove the
+      // replacement's PID file, dispatch onServerStopped, and write
+      // #status = stopped over the live replacement - so await the old
+      // run's COMPLETE finalization, not just its process's exit.
+      // Bounded: the process already exited, so what remains is interval
+      // teardown and the backup, which has its own stuck-backup timeout.
+      const previousFinalization = this.#stopFinalization;
+
+      if (previousFinalization) {
+        await previousFinalization;
+      } else if (previousProcess && this.#activeProcess === previousProcess) {
+        // Force-kill/crash edge: the old process exited without the
+        // graceful acknowledgement (continueStopServer never ran) and
+        // its close event has not landed yet - it can arrive as late as
+        // the replacement's startup preflight, where the identity guard
+        // would rightly skip it and NOTHING would finalize, leaking the
+        // backup interval and the shutdown backup. Adopt the
+        // finalization HERE so exactly one finalization runs before the
+        // replacement's startup begins.
+        this.#activeProcess = null;
+
+        await this.finalizeStopServer();
+      }
+    } finally {
+      this.#restartInProgress = false;
     }
 
     let rootPath = this.serverPath;
@@ -1041,11 +1393,6 @@ export default class DedicatedServer {
     this.#status = DedicatedServerStatus.launching;
 
     const ns = new NodeStorage(rootPath, "");
-    if (start.worldSettings?.backupType === BackupType.every2Minutes) {
-      this.#backupInterval = setInterval(this.doRunningBackup, 120000);
-    } else if (start.worldSettings?.backupType === BackupType.every5Minutes) {
-      this.#backupInterval = setInterval(this.doRunningBackup, 300000);
-    }
 
     if (this.#starts === 0) {
       await this.ensureServerFolders();
@@ -1083,6 +1430,25 @@ export default class DedicatedServer {
       this.config.writeFiles();
     }
 
+    // A fresh run must not inherit the previous run's attempted debug port:
+    // until this run reserves its own port, stage events, status snapshots,
+    // and diagnostics would otherwise report a port this run never attempted
+    // (possibly outside its base-port window) - e.g., when preflight fails
+    // before any reservation. The field intentionally survives stop/reset so
+    // the CURRENT failed attempt keeps reporting the port it actually used;
+    // it is cleared only here, when a new run begins.
+    this.#lastAttemptedDebugPort = undefined;
+
+    // Same policy for the effective persisted debugging settings: a new run
+    // re-reads them in beginDebuggerSetup; until then they are unknown, not
+    // inherited from the previous run's file state.
+    this.#effectiveInboundScriptDebugging = undefined;
+    this.#effectiveOutboundScriptDebugging = undefined;
+
+    if (this.#enableDebugger) {
+      this.#debuggerLifecycle.transition(DebuggerLifecycleStage.startingServer);
+    }
+
     // Use platform-aware path delimiter instead of hardcoded backslash
     rootPath = NodeStorage.ensureEndsWithDelimiter(rootPath);
 
@@ -1097,8 +1463,9 @@ export default class DedicatedServer {
       const errorMsg = `Server executable not found at ${fullPath}`;
       Log.fail(errorMsg);
       this.#status = DedicatedServerStatus.stopped;
+      this.failDebuggerForStartupPreflight(errorMsg);
       this.#onServerError.dispatch(this, errorMsg);
-      return;
+      return false;
     }
 
     // Verify digital signature on Windows before starting the server
@@ -1115,8 +1482,9 @@ export default class DedicatedServer {
           `If you trust this file, you can skip signature verification with --unsafe-skip-signature-validation.`;
         Log.fail(errorMsg);
         this.#status = DedicatedServerStatus.stopped;
+        this.failDebuggerForStartupPreflight(errorMsg);
         this.#onServerError.dispatch(this, errorMsg);
-        return;
+        return false;
       }
 
       if (!sigResult.isMicrosoftSigned) {
@@ -1127,8 +1495,9 @@ export default class DedicatedServer {
           `If you trust this file, you can skip signature verification with --unsafe-skip-signature-validation.`;
         Log.fail(errorMsg);
         this.#status = DedicatedServerStatus.stopped;
+        this.failDebuggerForStartupPreflight(errorMsg);
         this.#onServerError.dispatch(this, errorMsg);
-        return;
+        return false;
       }
 
       Log.message(`Signature verified: ${sigResult.signer}`);
@@ -1160,10 +1529,17 @@ export default class DedicatedServer {
     const childProcess = spawn(fullPath, args, spawnOptions);
     this.#status = DedicatedServerStatus.starting;
 
-    childProcess.on("close", this.handleClose);
+    this.attachProcess(childProcess);
 
-    this.#activeStdIn = childProcess.stdin;
-    this.#activeProcess = childProcess;
+    // Arm the periodic backup only once a process actually spawned: arming it
+    // before preflight leaked a live interval (never cleared by
+    // finalizeStopServer, which only runs for a process that attached) on
+    // every preflight-failure return.
+    if (start.worldSettings?.backupType === BackupType.every2Minutes) {
+      this.#backupInterval = setInterval(this.doRunningBackup, 120000);
+    } else if (start.worldSettings?.backupType === BackupType.every5Minutes) {
+      this.#backupInterval = setInterval(this.doRunningBackup, 300000);
+    }
 
     // Write PID file so we can find stale processes after a crash
     if (childProcess.pid) {
@@ -1184,6 +1560,62 @@ export default class DedicatedServer {
         this.#starts +
         ")."
     );
+
+    return true;
+  }
+
+  /**
+   * Attach a freshly spawned server process as the current active process.
+   * The close handler is bound to this specific child process: a restart can
+   * launch a replacement while the old process is still exiting, and a close
+   * event from that superseded process must not clear the replacement's
+   * handle or trigger finalize/auto-restart against it.
+   */
+  /**
+   * Resolve once the given child process has terminated; reject if it is
+   * still alive after timeoutMs. An already-exited process (exitCode or
+   * signalCode set) resolves immediately.
+   */
+  private static awaitProcessTermination(proc: ChildProcess, timeoutMs: number): Promise<void> {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const onExitEvent = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+
+      const timer = setTimeout(() => {
+        proc.removeListener("exit", onExitEvent);
+        reject(
+          new Error(
+            `Previous server process (PID ${proc.pid}) did not exit within ${timeoutMs}ms; ` +
+              "refusing to start a replacement into a still-owned slot."
+          )
+        );
+      }, timeoutMs);
+
+      proc.once("exit", onExitEvent);
+    });
+  }
+
+  attachProcess(childProcess: ChildProcess) {
+    childProcess.on("close", () => this.handleClose(childProcess));
+
+    this.#activeStdIn = childProcess.stdin;
+    this.#activeProcess = childProcess;
+  }
+
+  /**
+   * Whether a spawned server process is currently attached. Exists so
+   * process-identity behavior (a superseded process's output/close must not
+   * clear the current process handle) is observable without exposing the
+   * ChildProcess itself.
+   */
+  public get isProcessActive(): boolean {
+    return this.#activeProcess !== null;
   }
 
   async executeNextCommand() {
@@ -1378,6 +1810,13 @@ export default class DedicatedServer {
       Log.message("Stopping server '" + this.name + "'...");
       this.#onServerStopping.dispatch(this, "stop");
 
+      // Cancel debugger work the moment the stop begins - NOT when the
+      // process finally exits. The graceful-stop window keeps #status at
+      // "started", so an armed reconnect timer or an in-flight TCP retry
+      // loop left running here could still attach to the terminating (or a
+      // freshly restarted) server and consume its single debugger slot.
+      this.cancelDebuggerWork("server stop requested");
+
       const proc = this.#activeProcess;
       await this.writeToServer("stop");
 
@@ -1484,8 +1923,38 @@ export default class DedicatedServer {
     }
   }
 
-  private async handleClose() {
-    if (this.#activeProcess) {
+  private async handleClose(closedProcess: ChildProcess) {
+    // Only the current process may mutate server state on close. A close
+    // event from a process that has since been replaced (restart while the
+    // old process was still exiting) or already stopped (continueStopServer
+    // cleared the handle) is a stale notification, not a server stop.
+    if (this.#activeProcess === closedProcess) {
+      if (this.#restartInProgress) {
+        // A deliberate restart owns this teardown. On Windows the old
+        // child's close can land during the replacement's startup preflight;
+        // running unexpected-stop bookkeeping or the auto-restart loop here
+        // would act against the incoming run. Publish the finalization for
+        // the restart flow to await and return.
+        this.#activeProcess = null;
+
+        const restartFinalizationId = ++this.#stopFinalizationId;
+        const finalization = (async () => {
+          await this.finalizeStopServer();
+        })();
+
+        this.#stopFinalization = finalization;
+
+        try {
+          await finalization;
+        } finally {
+          if (this.#stopFinalizationId === restartFinalizationId) {
+            this.#stopFinalization = undefined;
+          }
+        }
+
+        return;
+      }
+
       this.#dsm.creatorTools.notifyStatusUpdate("Server was closed unexpectedly.");
 
       this.#unexpectedStopLog.push(new Date());
@@ -1494,7 +1963,20 @@ export default class DedicatedServer {
 
       this.#activeProcess = null;
 
-      await this.finalizeStopServer();
+      const finalizationId = ++this.#stopFinalizationId;
+      const finalization = (async () => {
+        await this.finalizeStopServer();
+      })();
+
+      this.#stopFinalization = finalization;
+
+      try {
+        await finalization;
+      } finally {
+        if (this.#stopFinalizationId === finalizationId) {
+          this.#stopFinalization = undefined;
+        }
+      }
 
       // Try to ensure that we're not restarting the server in an endless loop.
       // Use exponential backoff: 1s, 2s, 4s, 8s delays between restarts.
@@ -1541,13 +2023,37 @@ export default class DedicatedServer {
 
       this.#activeProcess = null;
 
-      await onExit(proc);
+      // Publish the finalization BEFORE awaiting the exit so a restart that
+      // is released by the same exit can find and await it (startServer).
+      const finalizationId = ++this.#stopFinalizationId;
+      const finalization = (async () => {
+        await onExit(proc);
 
-      await this.finalizeStopServer();
+        await this.finalizeStopServer();
+      })();
+
+      this.#stopFinalization = finalization;
+
+      try {
+        await finalization;
+      } finally {
+        if (this.#stopFinalizationId === finalizationId) {
+          this.#stopFinalization = undefined;
+        }
+      }
     }
   }
 
   async finalizeStopServer() {
+    // Identity guard: both callers null #activeProcess for their own process
+    // before invoking this, so a non-null handle here means a REPLACEMENT
+    // attached while this finalization was pending (a restart racing the
+    // exit). The shared state - intervals, PID file, status - belongs to the
+    // new run now; finalizing over it would tear the replacement down.
+    if (this.#activeProcess !== null) {
+      return;
+    }
+
     if (this.#backupInterval) {
       clearTimeout(this.#backupInterval);
       this.#backupInterval = undefined;
@@ -1562,13 +2068,37 @@ export default class DedicatedServer {
     // Stop player position polling
     this.stopPlayerPositionPolling();
 
-    // Disconnect the debug client
-    this.disconnectDebugClient();
+    // Tear down the debugger flow: client socket, pending timers, listener
+    // state, and the port reservation are all released so a subsequent start
+    // begins from a clean slate.
+    this.#debuggerLifecycle.transition(DebuggerLifecycleStage.stopping);
+    this.resetDebuggerRuntimeState(true);
+    this.#debuggerLifecycle.transition(DebuggerLifecycleStage.idle, "server stopped");
 
     // Remove PID file since the server is no longer running
     this._removePidFile(NodeStorage.ensureEndsWithDelimiter(this.serverPath));
 
-    await this.doBackup();
+    // A failing shutdown backup is REPORTED, never propagated: the
+    // finalization promise is awaited by restart (and the close/stop
+    // handlers), and a rejection there would abort the restart with no
+    // process attached while #status still reads "started" - a wedged state.
+    // The stop bookkeeping below must complete regardless.
+    try {
+      await this.doBackup();
+    } catch (e) {
+      const errorMsg = `Shutdown backup failed: ${e instanceof Error ? e.message : String(e)}`;
+
+      Log.error(errorMsg);
+      this.#onServerError.dispatch(this, errorMsg);
+    }
+
+    // Re-check after the backup await: a replacement that attached while the
+    // backup ran owns #status now - dispatching onServerStopped and writing
+    // "stopped" here would report the LIVE replacement as stopped and permit
+    // a second concurrent start through startServer's status guard.
+    if (this.#activeProcess !== null) {
+      return;
+    }
 
     this.#onServerStopped.dispatch(this, "stop");
     this.#status = DedicatedServerStatus.stopped;
@@ -1689,11 +2219,7 @@ export default class DedicatedServer {
         const existingBp = existingWorld.getBehaviorPack(currentBpId);
 
         // If the world has pack refs but none match this project, it's from a different project
-        if (
-          existingWorld.worldBehaviorPacks &&
-          existingWorld.worldBehaviorPacks.length > 0 &&
-          !existingBp
-        ) {
+        if (existingWorld.worldBehaviorPacks && existingWorld.worldBehaviorPacks.length > 0 && !existingBp) {
           Log.message("Project changed — resetting world data for clean state.");
           await this.#defaultWorldStorage.rootFolder.deleteAllFolderContents();
           await this.#defaultWorldStorage.rootFolder.ensureExists();
@@ -2037,6 +2563,13 @@ export default class DedicatedServer {
   }
 
   async directOutput(readable: Readable) {
+    // Identity of the process this stream belongs to. A restart attaches a
+    // new stream (and bumps the id) while the old stream may still be
+    // draining buffered lines; every state-mutating line below is gated on
+    // this id still being current, so a superseded process's delayed output
+    // cannot mutate the replacement's state. Its lines are still recorded
+    // and forwarded for display.
+    const outputStreamId = ++this.#outputStreamId;
     let time = new Date().getTime();
 
     for await (const line of chunksToLinesAsync(readable)) {
@@ -2059,66 +2592,40 @@ export default class DedicatedServer {
           Log.verbose(this.name + "@" + port + ": " + lineUp);
         }
 
-        if (sm.category === ServerMessageCategory.serverStarted) {
+        // Re-evaluated per line: the stream can be superseded mid-drain. A
+        // stale stream's "Server started" must not mark the replacement
+        // started or re-run debugger setup, and its "Quit correctly" must
+        // not clear the replacement's process handle via continueStopServer.
+        const isCurrentStream = outputStreamId === this.#outputStreamId;
+
+        if (!isCurrentStream) {
+          // Superseded process output is display-only; fall through to the
+          // recording/dispatch below without mutating state.
+        } else if (sm.category === ServerMessageCategory.serverStarted) {
           this.#starts++;
-
-          // EXPERIMENT: Delay the ENTIRE debugger setup (including `script debugger listen`)
-          // until after a player joins. This tests if the debugger listen command itself
-          // is what blocks player connections.
-          if (this.#enableDebugger && this.#enableDebuggerStreaming) {
-            if (this.#delayDebugClientUntilPlayerJoins) {
-              Log.debug(`[Debug] Debugger enabled but DELAYING 'script debugger listen' until player joins`);
-              this.#debugListenerReady = false; // Mark as not ready yet
-            } else {
-              // Original behavior: send command after server start
-              const me = this;
-              const debugPort = this.debugPort;
-              setTimeout(async function () {
-                Log.debug(`[Debug] Sending 'script debugger listen ${debugPort}' command...`);
-                me.#awaitingDebuggerListening = true;
-                await me.runCommand(`script debugger listen ${debugPort}`);
-                Log.debug(`[Debug] Command sent, waiting for 'Debugger listening' response...`);
-
-                // Fallback timeout: if we don't receive "Debugger listening" within 10 seconds,
-                // mark the listener as ready anyway (for cases where the message might not be sent)
-                setTimeout(function () {
-                  if (me.#awaitingDebuggerListening && me.#enableDebuggerStreaming) {
-                    me.#awaitingDebuggerListening = false;
-                    me.#debugListenerReady = true;
-                    if (me.#delayDebugClientUntilPlayerJoins) {
-                      Log.debug(`[Debug] Timeout waiting for 'Debugger listening', will connect when player joins...`);
-                    } else {
-                      Log.debug(`[Debug] Timeout waiting for 'Debugger listening', attempting connection anyway...`);
-                      me.connectDebugClient();
-                    }
-                  }
-                }, 10000);
-              }, 3000); // 3 second delay before enabling debugger
-            }
-          }
 
           this.#status = DedicatedServerStatus.started;
           this.handleServerStarted(lineUp);
+
+          // BDS is ready - now (and only now) begin the debugger listener
+          // flow. Floated: setup reports its own failures through the
+          // lifecycle; the catch only guards against a throwing stage-event
+          // subscriber becoming an unhandled rejection.
+          this.beginDebuggerSetup().catch((e: unknown) => {
+            Log.error(`[Debug] Unexpected error during debugger setup: ${e}`);
+          });
+        } else if (sm.category === ServerMessageCategory.version) {
+          const versionIndex = lineUp.indexOf("Version: ");
+
+          if (versionIndex >= 0) {
+            this.#bdsVersion = lineUp.substring(versionIndex + "Version: ".length).trim();
+          }
         } else if (sm.category === ServerMessageCategory.debuggerListening) {
           // Minecraft has confirmed the debug listener is ready
-          if (this.#awaitingDebuggerListening) {
-            this.#awaitingDebuggerListening = false;
-            this.#debugListenerReady = true;
-
-            if (this.#enableDebuggerStreaming) {
-              // Check if we have any players connected already (post-player-join scenario)
-              if (this.#delayDebugClientUntilPlayerJoins && !this.#hasPlayerJoined) {
-                // No players yet - wait for them
-                Log.debug(`[Debug] Debugger listening - waiting for player to join before connecting client`);
-              } else {
-                // Either not delaying, or player already joined (triggered debugger setup)
-                Log.debug(`[Debug] Debugger listening, connecting debug client...`);
-                this.connectDebugClient();
-              }
-            } else {
-              Log.debug(`[Debug] Debugger listening, but streaming not enabled, skipping client connection`);
-            }
-          }
+          this.handleDebuggerListening(lineUp);
+        } else if (sm.category === ServerMessageCategory.debuggerFailedToStart) {
+          // Minecraft reported the listener could not start (e.g., port in use)
+          this.handleDebuggerFailedToStart(lineUp);
         } else if (sm.category === ServerMessageCategory.serverStopped) {
           await this.continueStopServer();
         } else if (sm.category === ServerMessageCategory.playerConnected) {
@@ -2126,39 +2633,6 @@ export default class DedicatedServer {
           const xuid = this.getPlayerXuidFromLine(lineUp);
 
           Log.message("Player '" + playerName + "' connected.");
-
-          // Mark that at least one player has joined
-          this.#hasPlayerJoined = true;
-
-          // If we were waiting for a player to join before starting debug, do it now
-          if (
-            this.#enableDebugger &&
-            this.#enableDebuggerStreaming &&
-            !this.#debugClient &&
-            this.#delayDebugClientUntilPlayerJoins
-          ) {
-            Log.debug(`[Debug] Player connected - NOW starting debugger setup (was delayed until player join)...`);
-            const me = this;
-            const debugPort = this.debugPort;
-
-            // Start the debugger listen command now that a player has joined
-            setTimeout(async function () {
-              Log.debug(`[Debug] Sending 'script debugger listen ${debugPort}' command (post-player-join)...`);
-              me.#awaitingDebuggerListening = true;
-              await me.runCommand(`script debugger listen ${debugPort}`);
-              Log.debug(`[Debug] Command sent, waiting for 'Debugger listening' response...`);
-
-              // Fallback timeout
-              setTimeout(function () {
-                if (me.#awaitingDebuggerListening && me.#enableDebuggerStreaming) {
-                  me.#awaitingDebuggerListening = false;
-                  me.#debugListenerReady = true;
-                  Log.debug(`[Debug] Timeout waiting for 'Debugger listening', connecting client anyway...`);
-                  me.connectDebugClient();
-                }
-              }, 10000);
-            }, 1000); // Small delay after player join
-          }
 
           if (playerName && xuid) {
             const p = new Player();
@@ -2234,7 +2708,10 @@ export default class DedicatedServer {
           this.#onTestSucceeded.dispatch(this, testName);
         }
 
-        this.#lastResult = lineUp;
+        if (isCurrentStream) {
+          this.#lastResult = lineUp;
+        }
+
         if (this.outputLines.length > 10000) {
           this.outputLines.splice(0, 5000);
         }
@@ -2273,72 +2750,1061 @@ export default class DedicatedServer {
   }
 
   /**
-   * Connect to the Minecraft script debugger.
-   * The server should already be listening on the debug port after
-   * receiving the "script debugger listen <port>" command.
+   * Begin the debugger setup flow. Called only after BDS reports
+   * "Server started", so the listener command is never issued against a
+   * server that is not ready to take it.
+   *
+   * Stage flow: configuring -> startingListener -> waitingForReadiness ->
+   * connectingTcp -> negotiating -> selectingTarget -> resuming -> connected.
+   */
+  async beginDebuggerSetup(): Promise<void> {
+    if (!this.#enableDebugger) {
+      this.#debuggerLifecycle.transition(DebuggerLifecycleStage.idle, "debugger disabled in settings");
+      return;
+    }
+
+    // A restart can arrive while timers from the previous run are still
+    // pending; release all debugger runtime state (timers, client, port)
+    // before starting a fresh flow.
+    this.resetDebuggerRuntimeState(true);
+
+    this.#debuggerLifecycle.transition(DebuggerLifecycleStage.configuring);
+
+    const startsAtSetup = this.#starts;
+
+    // Verify the PERSISTED debugging setting relevant to the connection
+    // direction. The in-memory properties fields are write-only intent
+    // (never populated from server.properties), so checking them here was
+    // unreachable - BDS reads the file, and a hand-edited =false value
+    // would otherwise surface later as a misleading connection timeout
+    // instead of the settings failure this stage promises.
+    //
+    // The direction is the EFFECTIVE one - the same predicate
+    // runStartDebuggerListener branches on. Outbound mode with streaming
+    // disabled falls through to the inbound `script debugger listen` flow
+    // (the external-debugger handoff), so the setting that governs that
+    // operation is the inbound one; checking #debugOutboundConnect alone
+    // would let inbound=false pass preflight and time out misleadingly,
+    // and would reject outbound=false even though the listener can start.
+    const effectiveOutbound = this.#debugOutboundConnect && this.#enableDebuggerStreaming;
+    const settingKey = effectiveOutbound ? "allow-outbound-script-debugging" : "allow-inbound-script-debugging";
+
+    let persistedInbound: boolean | undefined;
+    let persistedOutbound: boolean | undefined;
+
+    try {
+      persistedInbound = await this.properties.readPersistedAllowInboundScriptDebugging();
+      persistedOutbound = await this.properties.readPersistedAllowOutboundScriptDebugging();
+    } catch (e) {
+      // An unreadable file is not proof of a settings problem; let the
+      // connection flow surface any real failure.
+      Log.debug(`[Debug] Could not read server.properties for settings verification: ${e}`);
+    }
+
+    const persistedAllowed = effectiveOutbound ? persistedOutbound : persistedInbound;
+
+    // A stop/restart may have begun while the file was being read; the
+    // superseding flow owns the lifecycle now - including the effective-
+    // values cache below, which a superseded setup must never publish over
+    // the winning run's values (its reads may even describe a different
+    // file state). Status and generation alone are not enough: a graceful
+    // stop leaves #status "started" and #starts unchanged until the process
+    // exits, so - like the reconnect scheduler - also reject the stopping
+    // and idle lifecycle stages, or a read pending when cancelDebuggerWork()
+    // ran would republish diagnostics and re-arm the listener that stop
+    // explicitly canceled.
+    if (
+      this.#status !== DedicatedServerStatus.started ||
+      this.#starts !== startsAtSetup ||
+      this.#debuggerLifecycle.stage === DebuggerLifecycleStage.stopping ||
+      this.#debuggerLifecycle.stage === DebuggerLifecycleStage.idle
+    ) {
+      return;
+    }
+
+    // Cache the effective values this setup acted on: diagnostics must
+    // describe the runtime decision, not in-memory write-intent defaults
+    // that may differ from disk.
+    this.#effectiveInboundScriptDebugging = persistedInbound;
+    this.#effectiveOutboundScriptDebugging = persistedOutbound;
+
+    if (persistedAllowed === false) {
+      this.failDebugger(
+        DebuggerFailureKind.settings,
+        `server.properties has ${settingKey}=false, so the script debugger connection cannot be established. Enable script debugging and restart the server.`
+      );
+      return;
+    }
+
+    this.#debugListenDelayTimer = setTimeout(() => {
+      this.#debugListenDelayTimer = undefined;
+
+      // Only proceed if the same server run is still active and no stop has
+      // begun (same stage checks as the guard above - the timer is cleared
+      // by cancelDebuggerWork, but a stop that lands between the clear and
+      // this callback still leaves #status "started").
+      if (
+        this.#status !== DedicatedServerStatus.started ||
+        this.#starts !== startsAtSetup ||
+        this.#debuggerLifecycle.stage === DebuggerLifecycleStage.stopping ||
+        this.#debuggerLifecycle.stage === DebuggerLifecycleStage.idle
+      ) {
+        return;
+      }
+
+      // Floated: startDebuggerListener converts its own errors into a
+      // lifecycle failure, so this catch only guards against a throwing
+      // stage-event subscriber turning into an unhandled rejection.
+      this.startDebuggerListener().catch((e: unknown) => {
+        Log.error(`[Debug] Unexpected error from the debugger listener startup: ${e}`);
+      });
+    }, DEBUG_LISTEN_DELAY_MS);
+  }
+
+  /**
+   * Reserve a collision-free debug port and issue `script debugger listen`.
+   * Connection is gated on the parsed "Debugger listening" confirmation;
+   * if BDS never confirms, the flow fails with a listener-readiness error
+   * (never a success-shaped fallback).
+   *
+   * Never rejects: the listen delay timer and the reconnect timer float the
+   * returned promise, so any startup error (e.g., a streamWrite EPIPE when
+   * BDS exits mid-command) is converted into an unwound attempt and a
+   * lifecycle failure instead of an unhandled rejection.
+   */
+  async startDebuggerListener(): Promise<void> {
+    // Single-flight: a concurrent entry (user Retry racing the reconnect
+    // timer) joins the in-flight startup instead of double-reserving a port
+    // and double-issuing the listen command.
+    if (this.#debugListenerStartPromise) {
+      return this.#debugListenerStartPromise;
+    }
+
+    if (this.#awaitingDebuggerListening || this.#debugListenerReady) {
+      Log.debug(
+        `[Debug] startDebuggerListener: listener already ${this.#debugListenerReady ? "ready" : "starting"}, skipping`
+      );
+      return;
+    }
+
+    // Take the guard and an attempt token BEFORE the first await, so no
+    // concurrent entry can slip past the guard during the reservation, and
+    // every later completion can be checked against this attempt.
+    this.#awaitingDebuggerListening = true;
+    this.#debugListenerConfirmed = false;
+    const attemptId = ++this.#debugListenerAttemptId;
+
+    const startPromise: Promise<void> = this.runStartDebuggerListener(attemptId)
+      .catch((e: unknown) => {
+        // runCommand() reaches streamWrite(), which rejects (EPIPE) if BDS
+        // exits while the listen command is being delivered. Left uncaught,
+        // that surfaces as an unhandled rejection in the floating callers
+        // AND strands the attempt half-armed: #awaitingDebuggerListening
+        // stuck true (blocking every retry), no readiness timeout armed, and
+        // the port reservation retained. Unwind the attempt and fail the
+        // lifecycle instead.
+        if (this.#debugListenerAttemptId !== attemptId) {
+          // Already superseded - the invalidating reset (stop/restart/retry,
+          // or the process-close handler's resetDebuggerRuntimeState) has
+          // unwound the shared state.
+          return;
+        }
+
+        this.#awaitingDebuggerListening = false;
+        this.invalidateDebugListenerAttempt();
+
+        DebugPortRegistry.release(this.#debugPortReservation);
+        this.#debugPortReservation = undefined;
+
+        this.failDebugger(
+          DebuggerFailureKind.serverStartup,
+          `Could not issue the 'script debugger listen' command - the server process exited or closed its input while the command was being delivered. ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      })
+      .finally(() => {
+        // Guarded: an invalidation may already have installed a newer attempt.
+        if (this.#debugListenerStartPromise === startPromise) {
+          this.#debugListenerStartPromise = undefined;
+        }
+      });
+
+    this.#debugListenerStartPromise = startPromise;
+
+    return startPromise;
+  }
+
+  private async runStartDebuggerListener(attemptId: number): Promise<void> {
+    this.#debuggerLifecycle.transition(DebuggerLifecycleStage.startingListener);
+
+    // NOTE: outbound mode with streaming disabled deliberately falls through
+    // to the inbound listen flow below. The external-debugger handoff
+    // guidance promises that disabling MCT's streaming leaves BDS listening
+    // for the official extension to attach to; in outbound mode MCT's own
+    // session dials out and no BDS-side listener exists, so returning early
+    // here left the handoff non-functional - nothing for VS Code to connect
+    // to. Arming the inbound listener (used by nothing else while streaming
+    // is off) is exactly the state the guidance describes; on the parsed
+    // confirmation, handleDebuggerListening parks the flow at idle with the
+    // socket left free for external debuggers.
+
+    const preferredPort = (this.#port ?? 19132) + 12;
+    const reservation = await DebugPortRegistry.reserve(preferredPort, this.serverPath);
+
+    // Superseded (stop/restart/retry) while the reservation was pending:
+    // release what was just reserved and bail without touching shared state.
+    // The release is token-conditional, so if a replacement attempt has
+    // already taken over this port's claim, this no-ops instead of dropping
+    // the replacement's active reservation.
+    if (this.#debugListenerAttemptId !== attemptId) {
+      DebugPortRegistry.release(reservation);
+      return;
+    }
+
+    if (reservation === undefined) {
+      this.#awaitingDebuggerListening = false;
+      this.failDebugger(
+        DebuggerFailureKind.portOccupied,
+        `No free script debugger port found in range ${preferredPort}-${preferredPort + 19}. Another debugger (e.g., VS Code) or a stale process may be holding these ports.`
+      );
+      return;
+    }
+
+    const port = reservation.port;
+    this.#debugPortReservation = reservation;
+    this.#lastAttemptedDebugPort = port;
+
+    if (this.#debugOutboundConnect && this.#enableDebuggerStreaming) {
+      // Outbound direction WITH streaming: MCT listens; BDS dials. There is
+      // no BDS-side listener, so the "Debugger listening" confirmation flow
+      // (and its readiness timeout) does not apply. With streaming DISABLED,
+      // this branch is skipped and the inbound listen flow below arms the
+      // BDS listener for the external-debugger handoff instead.
+      this.#awaitingDebuggerListening = false;
+      await this.connectDebugClientOutbound(port);
+      return;
+    }
+
+    Log.debug(`[Debug] Sending 'script debugger listen ${port}' command...`);
+    await this.runCommand(`script debugger listen ${port}`);
+
+    // Superseded while the listen command was being issued; the invalidating
+    // reset released the reservation.
+    if (this.#debugListenerAttemptId !== attemptId) {
+      return;
+    }
+
+    // BDS can emit "Debugger listening" or "Failed to start debugger" while
+    // the awaited stdin write is still completing. Those handlers clear
+    // #awaitingDebuggerListening (readiness proceeds to connect, failure
+    // releases the reservation and fails the lifecycle) WITHOUT advancing the
+    // attempt id - the attempt settled, it was not superseded. The generation
+    // check above therefore passes, and without this bail the continuation
+    // would rewind an already-settled attempt to waitingForReadiness
+    // (overwriting connectingTcp or clearing a terminal failure) and arm a
+    // readiness timeout that can later fail a flow that already resolved.
+    if (!this.#awaitingDebuggerListening) {
+      return;
+    }
+
+    this.#debuggerLifecycle.transition(DebuggerLifecycleStage.waitingForReadiness, `port ${port}`);
+
+    this.#debugListenerReadyTimeout = setTimeout(() => {
+      this.#debugListenerReadyTimeout = undefined;
+
+      // Only the attempt that armed this timeout may fail the flow.
+      if (this.#debugListenerAttemptId !== attemptId) {
+        return;
+      }
+
+      if (this.#awaitingDebuggerListening) {
+        this.#awaitingDebuggerListening = false;
+        this.failDebugger(
+          DebuggerFailureKind.listenerReadiness,
+          `BDS did not confirm 'Debugger listening' on port ${port} within ${DEBUG_LISTENER_READY_TIMEOUT_MS / 1000}s.`
+        );
+      }
+    }, DEBUG_LISTENER_READY_TIMEOUT_MS);
+  }
+
+  /**
+   * Invalidate any in-flight listener attempt: advance the attempt
+   * generation (so a pending reservation is released when it resolves, the
+   * armed readiness timeout no-ops, and stale BDS output is ignored) and
+   * drop the shared promise so the next startDebuggerListener starts fresh
+   * instead of joining a canceled attempt.
+   */
+  private invalidateDebugListenerAttempt() {
+    this.#debugListenerAttemptId++;
+    this.#debugListenerStartPromise = undefined;
+  }
+
+  /**
+   * Handle the parsed "Debugger listening" confirmation from BDS stdout.
+   * The confirmation must belong to the CURRENT listener attempt: when the
+   * line carries a port (e.g. "Debugger listening on port 19212"), a
+   * mismatch against the current reservation marks it as a stale
+   * confirmation from a superseded attempt, and it is ignored rather than
+   * allowed to complete the wrong attempt.
+   */
+  handleDebuggerListening(line?: string) {
+    if (!this.#awaitingDebuggerListening) {
+      return;
+    }
+
+    if (line !== undefined && this.#debugPortReservation !== undefined) {
+      const portMatch = line.match(/(\d{2,5})\s*$/);
+
+      if (portMatch && parseInt(portMatch[1], 10) !== this.#debugPortReservation.port) {
+        Log.debug(
+          `[Debug] Ignoring stale 'Debugger listening' confirmation for port ${portMatch[1]} - the current attempt reserved port ${this.#debugPortReservation.port}`
+        );
+        return;
+      }
+    }
+
+    this.#awaitingDebuggerListening = false;
+
+    if (this.#debugListenerReadyTimeout) {
+      clearTimeout(this.#debugListenerReadyTimeout);
+      this.#debugListenerReadyTimeout = undefined;
+    }
+
+    this.#debugListenerReady = true;
+    // Real confirmation from BDS output - trustworthy evidence for the
+    // single-client ownership classification (see debugOwnership).
+    this.#debugListenerConfirmed = true;
+
+    if (!this.#enableDebuggerStreaming) {
+      Log.debug(`[Debug] Debugger listening, but streaming not enabled; skipping client connection`);
+      this.#debuggerLifecycle.transition(
+        DebuggerLifecycleStage.idle,
+        "listener ready; streaming disabled - external debuggers may attach"
+      );
+      return;
+    }
+
+    Log.debug(`[Debug] Debugger listening confirmed; connecting debug client...`);
+    this.connectDebugClient();
+  }
+
+  /**
+   * Handle a "Failed to start debugger" line from BDS stdout. Only an
+   * attempt still awaiting confirmation may be failed by this line - a
+   * stale/late failure line must not tear down a newer successful attempt
+   * or release its reservation.
+   */
+  handleDebuggerFailedToStart(line: string) {
+    if (!this.#awaitingDebuggerListening) {
+      Log.debug(`[Debug] Ignoring 'Failed to start debugger' line - no listener attempt is awaiting confirmation`);
+      return;
+    }
+
+    this.#awaitingDebuggerListening = false;
+
+    if (this.#debugListenerReadyTimeout) {
+      clearTimeout(this.#debugListenerReadyTimeout);
+      this.#debugListenerReadyTimeout = undefined;
+    }
+
+    DebugPortRegistry.release(this.#debugPortReservation);
+    this.#debugPortReservation = undefined;
+
+    this.failDebugger(classifyDebuggerListenFailure(line), line);
+  }
+
+  /**
+   * Connect to the Minecraft script debugger. Only called once the listener
+   * is confirmed ready. Duplicate calls (readiness message racing a retry)
+   * are debounced.
    */
   async connectDebugClient() {
+    if (this.#debugConnectInFlight) {
+      Log.debug(`[Debug] connectDebugClient: connection already in flight, skipping`);
+      return;
+    }
+
     if (this.#debugClient) {
       Log.debug(`[Debug] connectDebugClient: Already have a debug client, skipping`);
       return;
     }
 
+    this.#debugConnectInFlight = true;
+    const connectAttempt = ++this.#debugConnectAttempt;
+
     const port = this.debugPort;
-    Log.debug(`[Debug] connectDebugClient: Creating MinecraftDebugClient for localhost:${port}...`);
+    // Every completion of this attempt (handshake events, TCP failure) is
+    // generation-gated on the server run that requested it, so a completion
+    // that straddles a stop/restart can never act on the wrong run.
+    const startsAtConnect = this.#starts;
+    this.#debuggerLifecycle.transition(DebuggerLifecycleStage.connectingTcp, `localhost:${port}`);
 
-    // Note: We no longer need to wait here because we're triggered by the
-    // "Debugger listening" message, which confirms the listener is ready.
+    const client = new MinecraftDebugClient();
+    this.#debugClient = client;
+    this.wireDebugClientEvents(client, startsAtConnect, port);
 
-    this.#debugClient = new MinecraftDebugClient();
+    try {
+      Log.debug(`[Debug] connectDebugClient: Calling connect(localhost, ${port})...`);
+      await client.connect("localhost", port);
+      Log.debug(`[Debug] connectDebugClient: socket connected, handshake in progress`);
+    } catch (e: any) {
+      // Deliberate teardown (stop/restart) cancels the attempt by releasing
+      // the client reference and/or starting a new run; only a failure that
+      // still belongs to the current run may schedule a reconnect.
+      const wasCurrentAttempt = this.#debugClient === client && this.#starts === startsAtConnect;
 
-    // Wire up debug client events
-    this.#debugClient.onConnected.subscribe((client, sessionInfo) => {
+      if (this.#debugClient === client) {
+        this.#debugClient = undefined;
+      }
+
+      // Dispose before releasing the reference (idempotent; ensures no
+      // socket/timer survives unreachably if connect() ever throws late).
+      client.disconnect();
+
+      const message = e?.message ? String(e.message) : String(e);
+      Log.message(`[Debug] connectDebugClient: TCP connect failed: ${sanitizeDebuggerDiagnosticText(message)}`);
+
+      if (wasCurrentAttempt) {
+        // TCP never connected (refused/timeout/unreachable). Deliberately
+        // NOT treated as evidence of another debugger owning the endpoint -
+        // listener races, firewalls, and BDS shutting down all land here.
+        this.#debugAttachFailure = client.lastAttachFailure ?? "connectFailed";
+        // Broadcast the terminal state: a panel that hydrated while this
+        // attempt was still connecting would otherwise stay on
+        // "Connecting..." forever.
+        this.#onDebugDisconnected.dispatch(this, message);
+      }
+
+      if (
+        wasCurrentAttempt &&
+        this.#status === DedicatedServerStatus.started &&
+        this.#debuggerLifecycle.stage !== DebuggerLifecycleStage.stopping &&
+        this.#debuggerLifecycle.stage !== DebuggerLifecycleStage.idle
+      ) {
+        this.scheduleDebugReconnect(DebuggerFailureKind.tcpConnect, message);
+      }
+    } finally {
+      // Attempt-scoped release: only the attempt that owns the latch may
+      // clear it (see #debugConnectAttempt).
+      if (this.#debugConnectAttempt === connectAttempt) {
+        this.#debugConnectInFlight = false;
+      }
+    }
+  }
+
+  /**
+   * Establish the debug session in the OUTBOUND direction: MCT listens on
+   * the reserved port and asks BDS to dial it (`script debugger connect`).
+   * This is the default for current BDS builds, whose inbound
+   * `script debugger listen` listener flaps (accept-then-reset loop, listener
+   * torn down and re-armed every few ticks), making the inbound direction
+   * unconnectable; the outbound direction matches the official
+   * minecraft-debugger extension model and yields a stable session.
+   */
+  private async connectDebugClientOutbound(port: number): Promise<void> {
+    if (this.#debugConnectInFlight) {
+      Log.debug(`[Debug] connectDebugClientOutbound: connection already in flight, skipping`);
+      return;
+    }
+
+    if (this.#debugClient) {
+      Log.debug(`[Debug] connectDebugClientOutbound: Already have a debug client, skipping`);
+      return;
+    }
+
+    this.#debugConnectInFlight = true;
+    const connectAttempt = ++this.#debugConnectAttempt;
+
+    const startsAtConnect = this.#starts;
+
+    const client = new MinecraftDebugClient();
+    this.#debugClient = client;
+    this.wireDebugClientEvents(client, startsAtConnect, port);
+
+    try {
+      this.#debuggerLifecycle.transition(
+        DebuggerLifecycleStage.connectingTcp,
+        `awaiting outbound connect on 127.0.0.1:${port}`
+      );
+
+      // Arm the accept listener BEFORE asking BDS to dial: serve() binds
+      // synchronously relative to its first await, so the command can never
+      // race an unbound port.
+      const accepted = client.serve("127.0.0.1", port, DEBUG_LISTENER_READY_TIMEOUT_MS);
+
+      // Swallow-and-inspect below: an unhandled rejection here would escape
+      // the floating callers (listen-delay timer, reconnect timer).
+      accepted.catch(() => {});
+
+      await this.runCommand(`script debugger connect 127.0.0.1 ${port}`);
+
+      await accepted;
+
+      Log.debug(`[Debug] connectDebugClientOutbound: BDS connected, handshake in progress`);
+    } catch (e: any) {
+      const wasCurrentAttempt = this.#debugClient === client && this.#starts === startsAtConnect;
+
+      if (this.#debugClient === client) {
+        this.#debugClient = undefined;
+      }
+
+      const message = e?.message ? String(e.message) : String(e);
+      Log.message(`[Debug] connectDebugClientOutbound: failed: ${sanitizeDebuggerDiagnosticText(message)}`);
+
+      if (wasCurrentAttempt) {
+        // Release the reservation so a retry re-probes for a free port
+        // (a confirmed same-owner claim would otherwise skip the bind probe
+        // and retry a port an external process may now hold).
+        DebugPortRegistry.release(this.#debugPortReservation);
+        this.#debugPortReservation = undefined;
+
+        // Outbound accept failures are transport-level: BDS never dialed (or
+        // the accept timed out). Never contention evidence.
+        this.#debugAttachFailure = client.lastAttachFailure ?? "connectFailed";
+
+        // Same panel-notification contract as connectDebugClient: the failed
+        // attempt never dispatched the client's onDisconnected.
+        this.#onDebugDisconnected.dispatch(this, message);
+
+        if (
+          this.#status === DedicatedServerStatus.started &&
+          this.#debuggerLifecycle.stage !== DebuggerLifecycleStage.stopping &&
+          this.#debuggerLifecycle.stage !== DebuggerLifecycleStage.idle
+        ) {
+          this.scheduleDebugReconnect(DebuggerFailureKind.tcpConnect, message);
+        }
+      }
+    } finally {
+      // Attempt-scoped release: only the attempt that owns the latch may
+      // clear it (see #debugConnectAttempt).
+      if (this.#debugConnectAttempt === connectAttempt) {
+        this.#debugConnectInFlight = false;
+      }
+    }
+  }
+
+  /**
+   * Wire up debug client events. Handlers ignore stale clients from a
+   * previous run (this.#debugClient !== client, or a different #starts).
+   */
+  private wireDebugClientEvents(client: MinecraftDebugClient, startsAtConnect: number, port: number): void {
+    // Fresh client, fresh session facts.
+    this.#debugSessionMissingTargetModule = false;
+
+    client.onProtocol.subscribe((_client, protocolEvent) => {
+      if (this.#debugClient !== client || this.#starts !== startsAtConnect) {
+        return;
+      }
+
+      // By the time onProtocol fires, the client has negotiated the version,
+      // auto-selected the target module, and sent resume - record each stage
+      // so diagnostics show how far the handshake progressed.
+      this.#debuggerLifecycle.transition(DebuggerLifecycleStage.negotiating, `server protocol v${protocolEvent.version}`);
+      this.#debuggerLifecycle.transition(
+        DebuggerLifecycleStage.selectingTarget,
+        `${protocolEvent.plugins?.length ?? 0} plugin(s) available`
+      );
+      this.#debuggerLifecycle.transition(DebuggerLifecycleStage.resuming);
+    });
+
+    client.onConnected.subscribe((_client, sessionInfo) => {
+      if (this.#debugClient !== client || this.#starts !== startsAtConnect) {
+        return;
+      }
+
+      this.#debugSessionMissingTargetModule = !sessionInfo.targetModuleUuid;
+
+      // Only a session with a selected script module counts as recovery for
+      // the reconnect budget: BDS drops module-less sessions right after the
+      // handshake, and resetting here would turn that into an endless
+      // connect/drop churn instead of a terminal, actionable failure.
+      if (sessionInfo.targetModuleUuid) {
+        this.#debugReconnectAttempts = 0;
+      }
+
+      this.#debugAttachFailure = undefined;
+
+      this.#debuggerLifecycle.transition(
+        DebuggerLifecycleStage.connected,
+        `protocol v${sessionInfo.protocolVersion}, port ${port}`
+      );
       Log.debug(`[Debug] Debug client connected: protocol v${sessionInfo.protocolVersion}`);
+
+      if (!sessionInfo.targetModuleUuid) {
+        Log.message(
+          "[Debug] Connected, but no script module was available to select; stats will not stream until a behavior pack with scripts is loaded."
+        );
+      }
+
+      // A successful handshake supersedes any recorded attach failure.
+      this.#debugAttachFailure = undefined;
+
       this.#onDebugConnected.dispatch(this, sessionInfo);
     });
 
-    this.#debugClient.onDisconnected.subscribe((client, reason) => {
-      Log.debug(`[Debug] Debug client disconnected: ${reason}`);
-      this.#onDebugDisconnected.dispatch(this, reason);
+    client.onDisconnected.subscribe((_client, reason) => {
+      this.handleDebugClientDisconnected(client, reason);
     });
 
-    this.#debugClient.onStats.subscribe((client, statsData) => {
+    client.onStats.subscribe((_client, statsData) => {
+      // Identity-guarded like onProtocol/onConnected: stats from a stale
+      // client must not reach the UI - DebugStatsPanel flips its connection
+      // status back to connected when stats arrive.
+      if (this.#debugClient !== client || this.#starts !== startsAtConnect) {
+        return;
+      }
+
       Log.verbose(`[Debug] DedicatedServer: Received stats tick=${statsData.tick}, stats=${statsData.stats.length}`);
       this.#onDebugStats.dispatch(this, statsData);
     });
 
-    this.#debugClient.onStopped.subscribe((client, stoppedEvent) => {
+    client.onStopped.subscribe((_client, stoppedEvent) => {
+      if (this.#debugClient !== client || this.#starts !== startsAtConnect) {
+        return;
+      }
+
       Log.verbose(`[Debug] Script execution paused: ${stoppedEvent.reason}`);
       this.#onDebugPaused.dispatch(this, stoppedEvent.reason);
     });
 
-    this.#debugClient.onProfilerCapture.subscribe((client, captureEvent) => {
+    client.onSchema.subscribe((_client, descriptors) => {
+      // Identity-guarded like the other subscribers: a stale client's schema
+      // must not overwrite the current session's descriptors in the UI.
+      if (this.#debugClient !== client || this.#starts !== startsAtConnect) {
+        return;
+      }
+
+      Log.debug(`[Debug] Diagnostics schema received: ${descriptors.length} descriptors`);
+      this.#onDebugSchema.dispatch(this, descriptors);
+    });
+
+    client.onProfilerCapture.subscribe((_client, captureEvent) => {
+      if (this.#debugClient !== client || this.#starts !== startsAtConnect) {
+        return;
+      }
+
       Log.message(`[Debug] Profiler capture received: ${captureEvent.capture_base_path}`);
       this.#onProfilerCapture.dispatch(this, captureEvent);
     });
 
-    this.#debugClient.onError.subscribe((client, error) => {
+    client.onError.subscribe((_client, error) => {
       Log.debug(`Debug client error: ${error}`);
     });
+  }
 
-    try {
-      Log.debug(`[Debug] connectDebugClient: Calling connect(localhost, ${this.debugPort})...`);
-      await this.#debugClient.connect("localhost", this.debugPort);
-      Log.debug(`[Debug] connectDebugClient: connect() returned successfully`);
-    } catch (e) {
-      Log.message(`[Debug] connectDebugClient: connect() FAILED: ${e}`);
+  /**
+   * Handle a debug client disconnect: release the client reference so a
+   * reconnect is possible, then either reconnect (transient causes) or fail
+   * with a specific kind (causes a blind reconnect cannot fix).
+   */
+  private handleDebugClientDisconnected(client: MinecraftDebugClient, reason: string) {
+    if (this.#debugClient !== client) {
+      return; // Stale client from a previous run
+    }
+
+    this.#debugClient = undefined;
+
+    Log.debug(`[Debug] Debug client disconnected: ${reason}`);
+
+    let kind = classifyDebugClientDisconnectReason(reason);
+    const isTypedRejection =
+      kind === DebuggerFailureKind.passcode ||
+      kind === DebuggerFailureKind.protocolMismatch ||
+      kind === DebuggerFailureKind.settings;
+
+    // A disconnect BEFORE the handshake ever completed (accept-then-close,
+    // handshake timeout) is an attach failure - record its typed reason so
+    // debugOwnership can classify it. connect() resolves at TCP connect, so
+    // these failures only surface here. A TYPED rejection (passcode,
+    // protocol mismatch, settings) is the opposite of contention evidence:
+    // Minecraft told us exactly why it refused THIS session, so the generic
+    // accept-then-close signature must not stand - with a confirmed
+    // listener, debugOwnership would read it as "another debugger owns the
+    // endpoint" and the panel would pair the real failure with the wrong
+    // stop-the-other-debugger instruction. Clear the latch instead.
+    if (isTypedRejection) {
+      this.#debugAttachFailure = undefined;
+    } else if (client.lastAttachFailure !== undefined) {
+      this.#debugAttachFailure = client.lastAttachFailure;
+    }
+
+    this.#onDebugDisconnected.dispatch(this, reason);
+
+    // Deliberate teardown (stop/restart) - don't classify or reconnect
+    if (
+      this.#status !== DedicatedServerStatus.started ||
+      this.#debuggerLifecycle.stage === DebuggerLifecycleStage.stopping ||
+      this.#debuggerLifecycle.stage === DebuggerLifecycleStage.idle
+    ) {
+      return;
+    }
+
+    let message = reason;
+
+    // BDS closes a session right after the handshake when it had no script
+    // module to select (no behavior pack with scripts on the world). The raw
+    // socket close would classify as prematureClose; surface the actual,
+    // actionable cause instead.
+    if (kind === DebuggerFailureKind.prematureClose && this.#debugSessionMissingTargetModule) {
+      kind = DebuggerFailureKind.moduleSelection;
+      message =
+        `${reason} - the connection closed right after the handshake and no script module was available to select. ` +
+        "Ensure a behavior pack with a script module is on the world, then retry.";
+    }
+
+    if (isTypedRejection) {
+      this.failDebugger(kind, message);
+      return;
+    }
+
+    this.scheduleDebugReconnect(kind, message);
+  }
+
+  /**
+   * Schedule a reconnect attempt with exponential backoff. Gives up (and
+   * fails with the triggering kind) after DEBUG_RECONNECT_MAX_ATTEMPTS.
+   */
+  private scheduleDebugReconnect(kind: DebuggerFailureKind, message: string) {
+    if (this.#debugReconnectTimer) {
+      return;
+    }
+
+    if (this.#debugReconnectAttempts >= DEBUG_RECONNECT_MAX_ATTEMPTS) {
+      this.failDebugger(kind, `${message} (giving up after ${DEBUG_RECONNECT_MAX_ATTEMPTS} reconnect attempts)`);
+      return;
+    }
+
+    this.#debugReconnectAttempts++;
+
+    const delayMs = DEBUG_RECONNECT_BASE_DELAY_MS * Math.pow(2, this.#debugReconnectAttempts - 1);
+
+    this.#debuggerLifecycle.transition(
+      DebuggerLifecycleStage.reconnecting,
+      `attempt ${this.#debugReconnectAttempts}/${DEBUG_RECONNECT_MAX_ATTEMPTS} in ${delayMs}ms`
+    );
+
+    const startsAtSchedule = this.#starts;
+
+    this.#debugReconnectTimer = setTimeout(() => {
+      this.#debugReconnectTimer = undefined;
+
+      // The timer is cleared when a stop begins (cancelDebuggerWork), but
+      // gate anyway: the run that armed it must still be the active, started,
+      // non-stopping run - status alone stays "started" through the whole
+      // graceful-stop window, so it is not a sufficient guard.
+      if (
+        this.#status !== DedicatedServerStatus.started ||
+        this.#starts !== startsAtSchedule ||
+        this.#debuggerLifecycle.stage === DebuggerLifecycleStage.stopping ||
+        this.#debuggerLifecycle.stage === DebuggerLifecycleStage.idle
+      ) {
+        return;
+      }
+
+      if (this.#debugListenerReady) {
+        this.connectDebugClient();
+      } else {
+        // Floated: see beginDebuggerSetup - the listener flow handles its
+        // own errors; this only prevents an unhandled rejection.
+        this.startDebuggerListener().catch((e: unknown) => {
+          Log.error(`[Debug] Unexpected error from the debugger listener startup: ${e}`);
+        });
+      }
+    }, delayMs);
+  }
+
+  /**
+   * User-initiated retry (e.g., from the DebugStatsPanel Retry action).
+   * Reuses the confirmed listener when possible; otherwise restarts the
+   * listener flow from port reservation.
+   */
+  async retryDebugConnection(): Promise<boolean> {
+    if (this.#status !== DedicatedServerStatus.started || !this.#enableDebugger) {
+      return false;
+    }
+
+    this.clearDebuggerTimers();
+    this.#debugReconnectAttempts = 0;
+    // A user retry supersedes any in-flight listener attempt - without this,
+    // the fresh startDebuggerListener below would join the canceled attempt.
+    this.invalidateDebugListenerAttempt();
+    this.#awaitingDebuggerListening = false;
+
+    this.disconnectDebugClient();
+
+    if (this.#debugListenerReady && this.#debugPortReservation !== undefined) {
+      await this.connectDebugClient();
+    } else {
+      this.#debugListenerReady = false;
+      DebugPortRegistry.release(this.#debugPortReservation);
+      this.#debugPortReservation = undefined;
+      await this.startDebuggerListener();
+    }
+
+    return true;
+  }
+
+  /**
+   * Cancel all scheduled and in-flight debugger work immediately: transitions
+   * the lifecycle to stopping (so disconnect handling treats socket closes as
+   * deliberate teardown), clears the reconnect/listener/delay timers, and
+   * disconnects the client - which also aborts a pending
+   * MinecraftDebugClient.connect() retry loop before it can assign a socket.
+   * Invoked when a stop begins; the timer callbacks and connect completions
+   * are additionally generation-gated on #starts as a second line of defense.
+   */
+  cancelDebuggerWork(detail: string) {
+    this.#debuggerLifecycle.transition(DebuggerLifecycleStage.stopping, detail);
+    this.resetDebuggerRuntimeState(true);
+  }
+
+  private failDebugger(kind: DebuggerFailureKind, message: string) {
+    Log.message(`[Debug] Debugger flow failed (${kind}): ${sanitizeDebuggerDiagnosticText(message)}`);
+    this.#debuggerLifecycle.fail(kind, message);
+  }
+
+  /**
+   * Mark the debugger lifecycle terminally failed because BDS startup
+   * preflight failed (missing executable, invalid signature, non-Microsoft
+   * signer). The lifecycle enters startingServer before preflight, so every
+   * preflight early-return must land it on a terminal stage - otherwise
+   * diagnostics claim "Starting server" forever for a start that
+   * definitively failed. No-op when the debugger is disabled (the lifecycle
+   * is idle then, which is already terminal).
+   */
+  private failDebuggerForStartupPreflight(message: string) {
+    if (!this.#enableDebugger) {
+      return;
+    }
+
+    this.failDebugger(DebuggerFailureKind.serverStartup, message);
+  }
+
+  private clearDebuggerTimers() {
+    if (this.#debugListenDelayTimer) {
+      clearTimeout(this.#debugListenDelayTimer);
+      this.#debugListenDelayTimer = undefined;
+    }
+
+    if (this.#debugListenerReadyTimeout) {
+      clearTimeout(this.#debugListenerReadyTimeout);
+      this.#debugListenerReadyTimeout = undefined;
+    }
+
+    if (this.#debugReconnectTimer) {
+      clearTimeout(this.#debugReconnectTimer);
+      this.#debugReconnectTimer = undefined;
+    }
+  }
+
+  /**
+   * Release all debugger runtime state: timers, listener flags, pending
+   * reconnects, the client socket, and (optionally) the port reservation.
+   * Called on stop, on restart, and before starting a fresh flow so no state
+   * leaks across runs.
+   */
+  resetDebuggerRuntimeState(releasePort: boolean) {
+    this.invalidateDebugListenerAttempt();
+    this.clearDebuggerTimers();
+
+    this.#awaitingDebuggerListening = false;
+    this.#debugListenerReady = false;
+    this.#debugListenerConfirmed = false;
+    this.#debugAttachFailure = undefined;
+    this.#releaseDebugConnectLatch();
+    this.#debugReconnectAttempts = 0;
+
+    this.disconnectDebugClient();
+
+    if (releasePort && this.#debugPortReservation !== undefined) {
+      DebugPortRegistry.release(this.#debugPortReservation);
+      this.#debugPortReservation = undefined;
+    }
+
+    return true;
+  }
+
+  /**
+   * Explicit, user-driven retry of the debug attach (the "Check again" /
+   * "Retry connection" actions in the diagnostics panel). Clears the
+   * attach-failure latch and re-runs the lifecycle's user-retry path.
+   * Concurrent callers share the in-flight attempt's promise, so everyone
+   * receives the settled outcome - connected, a typed failure, or the real
+   * handshake deadline elapsing - instead of a premature state snapshot. The
+   * onDebugConnected / onDebugDisconnected events broadcast state as usual.
+   */
+  async reattachDebugClient(): Promise<{ connected: boolean; ownership: DebugOwnershipState }> {
+    if (this.#debugReattachPromise) {
+      return this.#debugReattachPromise;
+    }
+
+    this.#debugReattachPromise = this.#runDebugReattach().finally(() => {
+      this.#debugReattachPromise = undefined;
+    });
+
+    return this.#debugReattachPromise;
+  }
+
+  async #runDebugReattach(): Promise<{ connected: boolean; ownership: DebugOwnershipState }> {
+    if (this.#debugClient?.isConnected) {
+      return { connected: true, ownership: this.debugOwnership };
+    }
+
+    // Discard the current client so connectDebugClient's "already have a
+    // debug client" guard doesn't skip the attempt. disconnect() also CANCELS
+    // a dial still in flight (an automatic attach we're racing): the client's
+    // retry loop observes the cancellation and aborts, and the identity
+    // guards in the event subscribers keep the discarded client from ever
+    // mutating state that belongs to its replacement.
+    if (this.#debugClient) {
+      this.#debugClient.disconnect();
       this.#debugClient = undefined;
     }
+    this.#debugAttachFailure = undefined;
+
+    // The canceled automatic attach may still OWN the global connect latch
+    // (its retry loop only observes the cancellation when its backoff sleep
+    // or dial settles). Release it on the canceled attempt's behalf - with
+    // the generation advanced, the stale attempt's own finally can no longer
+    // clear the latch the replacement is about to take - or the
+    // connectDebugClient below would skip the replacement entirely and this
+    // reattach would report not-connected without ever dialing.
+    this.#releaseDebugConnectLatch();
+
+    Log.debug(`[Debug] reattachDebugClient: retrying debug attach on port ${this.debugPort}...`);
+
+    if (this.#status === DedicatedServerStatus.started && this.#enableDebugger) {
+      // Managed flow: reuse the lifecycle's user-retry path - it supersedes
+      // an in-flight listener attempt, resets the reconnect budget, and
+      // restarts from port reservation when the listener isn't confirmed.
+      await this.retryDebugConnection();
+    } else {
+      // Direct endpoint reattach (no managed listener flow to restart, e.g.
+      // an externally hosted debug endpoint). The current client was already
+      // discarded above, so connectDebugClient's "already have a debug
+      // client" guard cannot skip the attempt.
+
+      // disconnect() cancels a still-dialing automatic attach, but its retry
+      // loop only observes the cancellation when its current backoff sleep
+      // elapses; until then the connect debounce stays taken and
+      // connectDebugClient() would skip this attempt entirely - the reattach
+      // then reports a premature not-connected outcome while the canceled
+      // dial's debounce drains. Wait the debounce out (bounded well above
+      // one backoff window) so the reattach's own dial actually starts.
+      const debounceDeadline = Date.now() + 5000;
+
+      while (this.#debugConnectInFlight && Date.now() < debounceDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      await this.connectDebugClient();
+    }
+
+    // The retry resolves at TCP connect; the ProtocolEvent handshake
+    // completes asynchronously. Wait for it to settle (or fail) so the
+    // reported outcome reflects an actual negotiation. The deadline covers
+    // the client's full handshake window (plus scheduling slack) so a
+    // slow-but-valid negotiation is never reported as disconnected. Re-read
+    // the field each iteration: a handshake failure clears it via the
+    // disconnect handler.
+    const deadline = Date.now() + PROTOCOL_HANDSHAKE_TIMEOUT_MS + 2000;
+    // Cast: TS control-flow narrowing pinned #debugClient to undefined from
+    // the discard above and doesn't see connectDebugClient's reassignment.
+    let client = this.#debugClient as MinecraftDebugClient | undefined;
+    while (Date.now() < deadline && client !== undefined && client.state === DebugConnectionState.Connecting) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      client = this.#debugClient as MinecraftDebugClient | undefined;
+    }
+
+    return { connected: client?.isConnected === true, ownership: this.debugOwnership };
+  }
+
+  /**
+   * Release the connect in-flight latch on behalf of a CANCELED attempt and
+   * advance the attempt generation, so a replacement may dial immediately
+   * while the canceled attempt's late settlement (see connectDebugClient's
+   * finally) can no longer clear the replacement's latch.
+   */
+  #releaseDebugConnectLatch() {
+    this.#debugConnectAttempt++;
+    this.#debugConnectInFlight = false;
   }
 
   /**
    * Disconnect the debug client if connected.
    */
   disconnectDebugClient() {
-    if (this.#debugClient) {
-      this.#debugClient.disconnect();
-      this.#debugClient = undefined;
+    const client = this.#debugClient;
+
+    // Clear the reference first so the onDisconnected handler recognizes this
+    // as a deliberate teardown and does not schedule a reconnect.
+    this.#debugClient = undefined;
+
+    if (client) {
+      client.disconnect();
     }
+    this.#debugAttachFailure = undefined;
+  }
+
+  /**
+   * Build a sanitized diagnostics snapshot for support / copy-to-clipboard.
+   * Includes only infrastructure log lines (never creator content, player
+   * chat, or command output), and all text is scrubbed of filesystem paths,
+   * passcodes, and tokens.
+   */
+  getDebugDiagnostics(): IDebuggerDiagnostics {
+    const sessionInfo = this.#debugClient?.sessionInfo;
+
+    const allowedCategories = [
+      ServerMessageCategory.serverStarting,
+      ServerMessageCategory.version,
+      ServerMessageCategory.openingLevel,
+      ServerMessageCategory.ipv4supported,
+      ServerMessageCategory.ipv6supported,
+      ServerMessageCategory.serverStarted,
+      ServerMessageCategory.debuggerListening,
+      ServerMessageCategory.debuggerClosing,
+      ServerMessageCategory.debuggerFailedToStart,
+      ServerMessageCategory.serverStopRequested,
+      ServerMessageCategory.serverStopping,
+      ServerMessageCategory.serverStopped,
+    ];
+
+    const recentServerMessages: string[] = [];
+
+    for (let i = Math.max(0, this.outputLines.length - 200); i < this.outputLines.length; i++) {
+      const outputLine = this.outputLines[i];
+      const sm = new ServerMessage(outputLine.message);
+
+      if (allowedCategories.includes(sm.category)) {
+        recentServerMessages.push(sanitizeDebuggerDiagnosticText(outputLine.message));
+      }
+    }
+
+    return {
+      stage: this.#debuggerLifecycle.stage,
+      failureKind: this.#debuggerLifecycle.failureKind,
+      errorMessage: this.#debuggerLifecycle.errorMessage,
+      generatedAt: new Date().toISOString(),
+      bdsVersion: this.#bdsVersion ?? this.version?.version,
+      serverPort: this.#port,
+      debugPort: this.debugPort,
+      // The persisted values the last debugger setup actually acted on -
+      // NOT the in-memory write-intent defaults, which can claim enabled
+      // while the persisted false is what failed the settings stage.
+      // undefined = no setup has read the file yet (or it was unreadable).
+      inboundScriptDebuggingEnabled: this.#effectiveInboundScriptDebugging,
+      outboundScriptDebuggingEnabled: this.#effectiveOutboundScriptDebugging,
+      protocolVersion: sessionInfo?.protocolVersion,
+      // Derived boolean only: the raw module UUID is creator-identifying
+      // and this snapshot reaches the clipboard verbatim (see
+      // IDebuggerDiagnostics.hasTargetModule).
+      hasTargetModule: sessionInfo?.targetModuleUuid !== undefined ? true : undefined,
+      pluginCount: sessionInfo?.plugins?.length,
+      stageHistory: this.#debuggerLifecycle.history,
+      recentServerMessages: recentServerMessages.slice(-30),
+    };
   }
 
   /**

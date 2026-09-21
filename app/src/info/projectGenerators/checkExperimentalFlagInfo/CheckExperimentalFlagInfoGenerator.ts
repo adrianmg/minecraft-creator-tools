@@ -9,7 +9,11 @@ import { ProjectItemType } from "../../../app/IProjectItemData";
 import Project from "../../../app/Project";
 import MCWorld from "../../../minecraft/MCWorld";
 import WorldLevelDat from "../../../minecraft/WorldLevelDat";
-import { CheckExperimentalFlagInfoGeneratorTest } from "./CheckExperimentalFlagInfoData";
+import {
+  CheckExperimentalFlagInfoGeneratorTest,
+  CheckExperimentalFlagValidationRules,
+} from "./CheckExperimentalFlagInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 /***********
  * Generator for Checking Experimental Flag for world
@@ -20,9 +24,11 @@ import { CheckExperimentalFlagInfoGeneratorTest } from "./CheckExperimentalFlagI
  * @see {@link ../../../../public/data/forms/mctoolsval/expflag.form.json} for topic definitions
  */
 
-export default class CheckExperimentalFlagInfoGenerator implements IProjectInfoGenerator {
+export default class CheckExperimentalFlagInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "EXPFLAG";
   title = "Experimental Flags";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = CheckExperimentalFlagValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {
     info.experimentalFlagIsOrWasTrue = infoSet.getSummedDataValue(

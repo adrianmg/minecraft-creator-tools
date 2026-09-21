@@ -13,7 +13,9 @@ import {
   ProtectedVanillaAssetEntry,
   VanillaProtectedAssetsInfoGeneratorTest,
   VanillaProtectedAssetsTests,
+  VanillaProtectedAssetsValidationRules,
 } from "./VanillaProtectedAssetsInfoGeneratorData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 type ProtectedVanillaAssetMatch = {
   entry: ProtectedVanillaAssetEntry;
@@ -24,10 +26,12 @@ type ProtectedVanillaAssetMatch = {
  * Reports when creator content overrides specific vanilla assets that are protected
  * by downstream validation services.
  */
-export default class VanillaProtectedAssetsInfoGenerator implements IProjectInfoGenerator {
+export default class VanillaProtectedAssetsInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "VANPRO";
   title = "Vanilla Protected Assets";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = VanillaProtectedAssetsValidationRules;
 
   constructor(private protectedEntries: readonly ProtectedVanillaAssetEntry[] = ProtectedVanillaAssetEntries) {}
 

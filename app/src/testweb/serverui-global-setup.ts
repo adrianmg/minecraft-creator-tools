@@ -4,13 +4,14 @@
  * This module starts the MCT server on a random port before tests run
  * and stores the port number for tests to use.
  *
- * The server is started with the test admin passcode and configured
- * to skip signature verification for faster test startup.
+ * The server is started with the test admin passcode and uses the local
+ * downloaded BDS source when the suite requires dedicated-server features.
  */
 import { spawn, ChildProcess } from "child_process";
 import * as path from "path";
 import * as http from "http";
 import * as fs from "fs";
+import { getServerStateFiles, ServerUiTestStateNamespace } from "./serverui-test-state";
 
 // Store the server process globally so teardown can access it
 declare global {
@@ -38,12 +39,6 @@ const SLOT_RANGE_END = 10;
 
 // Test admin passcode - must match what tests expect
 const TEST_ADMIN_PASSCODE = "testpswd";
-
-// File to store the port number for tests to read
-const PORT_FILE = path.resolve(__dirname, "../../debugoutput/.serverui-test-port");
-
-// File to store the slot number for tests to read
-const SLOT_FILE = path.resolve(__dirname, "../../debugoutput/.serverui-test-slot");
 
 /**
  * Generate a random port in the configured range.
@@ -95,14 +90,18 @@ async function findAvailablePort(): Promise<number> {
 /**
  * Wait for the server to be ready by polling the health endpoint.
  */
-async function waitForServerReady(port: number, maxWaitMs: number = 30000): Promise<boolean> {
+async function waitForServerReady(
+  port: number,
+  readinessPath: string = "/",
+  maxWaitMs: number = 30000
+): Promise<boolean> {
   const startTime = Date.now();
   const pollInterval = 500;
 
   while (Date.now() - startTime < maxWaitMs) {
     try {
       const response = await new Promise<boolean>((resolve) => {
-        const req = http.get(`http://localhost:${port}/`, (res) => {
+        const req = http.get(`http://localhost:${port}${readinessPath}`, (res) => {
           resolve(res.statusCode === 200);
         });
         req.on("error", () => resolve(false));
@@ -128,10 +127,15 @@ async function waitForServerReady(port: number, maxWaitMs: number = 30000): Prom
 }
 
 /**
- * Global setup function called by Playwright before all tests.
+ * Start the MCT server used by a Playwright suite.
  */
-async function globalSetup(): Promise<void> {
-  console.log("Starting MCT server for Server UI tests...");
+export async function startServer(
+  features: string = "all",
+  namespace: ServerUiTestStateNamespace = "full"
+): Promise<void> {
+  const normalizedFeatures = features.toLowerCase();
+  const { portFile, slotFile } = getServerStateFiles(namespace);
+  console.log(`Starting MCT server for Server UI tests (${normalizedFeatures})...`);
 
   // Find an available port
   const port = await findAvailablePort();
@@ -143,37 +147,26 @@ async function globalSetup(): Promise<void> {
   console.log(`Using slot ${slot} (Minecraft port ${minecraftPort}) for dedicated server`);
 
   // Ensure the debugoutput directory exists
-  const debugOutputDir = path.dirname(PORT_FILE);
+  const debugOutputDir = path.dirname(portFile);
   if (!fs.existsSync(debugOutputDir)) {
     fs.mkdirSync(debugOutputDir, { recursive: true });
   }
 
   // Write the port and slot to files so tests can read them
-  fs.writeFileSync(PORT_FILE, port.toString());
-  fs.writeFileSync(SLOT_FILE, slot.toString());
+  fs.writeFileSync(portFile, port.toString());
+  fs.writeFileSync(slotFile, slot.toString());
 
   // Path to the MCT CLI entry point (compiled from cli/index.ts)
   const mctPath = path.resolve(__dirname, "../../toolbuild/jsn/cli/index.mjs");
 
   // Start the MCT server with the test passcode and random slot
-  // Command format: mct --adminpc <passcode> serve <features> <domain> <port> --slot <slot>
+  // Command format: mct --adminpc <passcode> serve <features> --port <port> --slot <slot>
   // The --adminpc is a global option (before serve)
-  // The port is a positional argument after 'serve all localhost'
   // The --slot option specifies which Minecraft port range to use
   // Note: We keep signature verification enabled to test the full security flow
   const serverProcess = spawn(
     "node",
-    [
-      mctPath,
-      "--adminpc",
-      TEST_ADMIN_PASSCODE,
-      "serve",
-      "all",
-      "localhost",
-      port.toString(),
-      "--slot",
-      slot.toString(),
-    ],
+    [mctPath, "--adminpc", TEST_ADMIN_PASSCODE, "serve", "all", "--port", port.toString(), "--slot", slot.toString()],
     {
       cwd: path.resolve(__dirname, "../.."),
       stdio: ["ignore", "pipe", "pipe"],
@@ -213,8 +206,10 @@ async function globalSetup(): Promise<void> {
     }
   });
 
-  // Wait for the server to be ready
-  const isReady = await waitForServerReady(port);
+  // Basic web services intentionally do not expose the UI root. Use the public
+  // favicon route as the socket/readiness probe for that API-only mode.
+  const readinessPath = normalizedFeatures === "basicwebservices" ? "/favicon.ico" : "/";
+  const isReady = await waitForServerReady(port, readinessPath);
 
   if (!isReady) {
     // Clean up if server failed to start
@@ -223,6 +218,13 @@ async function globalSetup(): Promise<void> {
   }
 
   console.log(`MCT server started successfully on port ${port}`);
+}
+
+/**
+ * Global setup for the full Server UI suite.
+ */
+async function globalSetup(): Promise<void> {
+  await startServer("all", "full");
 }
 
 export default globalSetup;

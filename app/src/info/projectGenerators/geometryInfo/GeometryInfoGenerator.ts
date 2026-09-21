@@ -10,7 +10,8 @@ import Project from "../../../app/Project";
 import ContentIndex from "../../../core/ContentIndex";
 import ModelGeometryDefinition from "../../../minecraft/ModelGeometryDefinition";
 import { ItemDisplayTransforms } from "../../../minecraft/IModelGeometry";
-import { GeometryInfoGeneratorTest } from "./GeometryInfoData";
+import { GeometryInfoGeneratorTest, GeometryValidationRules } from "./GeometryInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { GeometryInfoGeneratorTest };
 
@@ -19,9 +20,11 @@ export { GeometryInfoGeneratorTest };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/geometry.form.json} for topic definitions
  */
-export default class GeometryInfoGenerator implements IProjectInfoGenerator {
+export default class GeometryInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "GEOMETRY";
   title = "Model Geometry Validation";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = GeometryValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {}
 

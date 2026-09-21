@@ -3,7 +3,7 @@
 
 import { expect } from "chai";
 import CheckSkinPackJsonGenerator from "./CheckSkinPackJsonGenerator";
-import { CheckSkinPackJsonTests } from "./CheckSkinPackJsonData";
+import { CheckSkinPackJsonTests, CheckSkinPackJsonUnwiredTests } from "./CheckSkinPackJsonData";
 import { createStubProject } from "../../../test/stubs/app/projects/StubProject";
 import { createStubProjectItem } from "../../../test/stubs/app/projects/StubProjectItem";
 import { createStubPack } from "../../../test/stubs/app/projects/StubPack";
@@ -34,7 +34,7 @@ describe("CheckSkinPackJsonGenerator", () => {
       getPack: async () => null,
     });
     const results = await generator.generate(createStubProject([skinManifestItem]));
-    const errors = results.filter((r) => r.generatorIndex === CheckSkinPackJsonTests.CouldNotFindRelatedPack.id);
+    const errors = results.filter((r) => r.generatorIndex === CheckSkinPackJsonUnwiredTests.CouldNotFindRelatedPack.id);
     expect(errors.length).to.equal(1);
   });
 

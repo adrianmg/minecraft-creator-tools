@@ -10,6 +10,7 @@ import ITagData from "../../../app/ITagData";
 import IProjectInfoGenerator from "../../IProjectInfoGenerator";
 import Project from "../../../app/Project";
 import Utilities from "../../../core/Utilities";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export interface IPackSummaryMetadata {
   pack?: IPackSummaryMetadataPack;
@@ -71,12 +72,17 @@ export interface IPackSummaryMetadataOfferResultOfferModel {
 /**
  * Aggregates pack metadata from various sources including marketplace submissions.
  */
-export default class PackMetaDataInformationGenerator implements IProjectInfoGenerator {
+export default class PackMetaDataInformationGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "PACKMETADATA";
   title = "General info";
   tags: string[] = [];
   tagMetadata: ITagData = {};
   canAlwaysProcess = true;
+
+  // PACKMETADATA surfaces marketplace submission metadata as info items and
+  // emits no error/warning/recommendation results; its rule inventory is
+  // deliberately empty.
+  readonly validationRules: readonly ValidationRuleDefinition[] = [];
 
   getTopicData(topicId: number) {
     if (topicId >= 101 && topicId - 201 <= this.tags.length) {

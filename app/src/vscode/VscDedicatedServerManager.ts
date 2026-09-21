@@ -16,7 +16,10 @@ import { IMinecraftStartMessage } from "../app/IMinecraftStartMessage";
 import Utilities from "../core/Utilities";
 import { IWorldSettings } from "../minecraft/IWorldSettings";
 import ServerMessage from "../local/ServerMessage";
+import VsCodeFileManager from "../manager/VsCodeFileManager";
 import IActionSetData from "../actions/IActionSetData";
+import MinecraftUtilities from "../minecraft/MinecraftUtilities";
+import Log from "../core/Log";
 
 export default class VscDedicatedServerManager implements IMinecraft {
   _dsm: ServerManager;
@@ -30,6 +33,12 @@ export default class VscDedicatedServerManager implements IMinecraft {
   _creatorTools: CreatorTools;
   _activeProcess = null;
   _em: ExtensionManager;
+
+  // Active stage-event subscription that mirrors the lifecycle-confirmed
+  // debug port into the managed launch profile; replaced on each
+  // prepareAndStart so a previous session's server cannot keep writing.
+  private _debugPortSubscription: (() => void) | undefined;
+  private _lastWrittenDebugPort: number | undefined;
 
   state: CreatorToolsMinecraftState;
   activeProject: Project | undefined;
@@ -226,7 +235,11 @@ export default class VscDedicatedServerManager implements IMinecraft {
       startInfo = this.getStartInfoFromProject(push.project);
     }
 
-    const srv = await this._dsm.ensureActiveServer(0, startInfo);
+    // The VS Code extension manages a single server, in slot 0. Hoisted so
+    // the same value flows to both the server and the launch configuration.
+    const slot = 0;
+
+    const srv = await this._dsm.ensureActiveServer(slot, startInfo);
 
     if (!srv) {
       return {
@@ -244,6 +257,23 @@ export default class VscDedicatedServerManager implements IMinecraft {
 
         await srv.deploy(push.project.projectFolder, false, true);
 
+        // Deployment is the session boundary where the managed slot is
+        // known: (re)generate the launch configuration here so the derived
+        // debug port matches the server that actually hosts the content
+        // (19144 + slot * 32), rather than defaulting to slot 0 blindly.
+        // The server being started is the LOCAL built-in BDS, so this
+        // boundary carries explicit localhost intent: a managed profile
+        // left pointing at a remote machine must be re-targeted here, or
+        // F5 attaches to the previous host instead of this server.
+        await new VsCodeFileManager().ensureMinecraftDebugConfig(push.project, slot, "localhost");
+
+        // The listener can reserve a FALLBACK port when the slot-derived
+        // preferred port is occupied, and that is only known after the
+        // lifecycle confirms it - rewrite the managed profile with the
+        // confirmed port then, or F5 targets the stale preferred port
+        // instead of the actual BDS listener.
+        this.watchForDebugPortFallback(srv, push.project, slot);
+
         return {
           type: PrepareAndStartResultType.started,
         };
@@ -255,6 +285,56 @@ export default class VscDedicatedServerManager implements IMinecraft {
     return {
       type: PrepareAndStartResultType.started,
     };
+  }
+
+  /**
+   * Keep the managed launch profile in sync with the debug port the
+   * lifecycle actually confirmed. The deploy-time write above uses the
+   * static slot derivation, but the listener flow reserves a collision-free
+   * port and can land on a fallback when the preferred port is occupied;
+   * stage events carry that reserved port, and only a rewrite here makes F5
+   * attach to the real listener. Idempotent per port so the steady stream of
+   * stage events does not rewrite the file repeatedly.
+   */
+  private watchForDebugPortFallback(srv: DedicatedServer, project: Project, slot: number) {
+    if (this._debugPortSubscription) {
+      this._debugPortSubscription();
+      this._debugPortSubscription = undefined;
+    }
+
+    this._lastWrittenDebugPort = undefined;
+
+    const derivedPort = MinecraftUtilities.getDebugPortForSlot(slot);
+
+    this._debugPortSubscription = srv.onDebugStageChanged.subscribe((_srv, stageData) => {
+      const confirmedPort = stageData.debugPort;
+
+      if (confirmedPort === undefined || confirmedPort === derivedPort || confirmedPort === this._lastWrittenDebugPort) {
+        return;
+      }
+
+      this._lastWrittenDebugPort = confirmedPort;
+
+      // Floated: a launch-file write failure must not break the stage-event
+      // subscriber chain; the profile just keeps its previous port.
+      new VsCodeFileManager().ensureMinecraftDebugConfig(project, slot, "localhost", confirmedPort).catch((e) => {
+        Log.debug("Could not update the managed launch profile with the confirmed debug port: " + e);
+      });
+    });
+
+    // An already-running session may have confirmed a fallback port BEFORE
+    // this boundary re-armed; no further stage event will repeat it, so the
+    // subscriber above would never fire. Write the already-confirmed port
+    // now (debugPort reports the reservation once one exists).
+    const confirmedNow = srv.debugPort;
+
+    if (confirmedNow !== undefined && confirmedNow !== derivedPort) {
+      this._lastWrittenDebugPort = confirmedNow;
+
+      new VsCodeFileManager().ensureMinecraftDebugConfig(project, slot, "localhost", confirmedNow).catch((e) => {
+        Log.debug("Could not update the managed launch profile with the confirmed debug port: " + e);
+      });
+    }
   }
 
   async initialize() {}

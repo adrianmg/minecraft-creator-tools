@@ -11,6 +11,7 @@ import Utilities from "../core/Utilities";
 import { IErrorMessage, IErrorable } from "../core/IErrorable";
 import ILevelDbFileInfo from "./ILevelDbFileInfo";
 import LevelDbIndex, { ILevelDbFileIndex, ILevelDbLogIndex } from "./LevelDbIndex";
+import WorldDataMetricsReducer from "./WorldDataMetricsReducer";
 
 declare const require: ((moduleName: string) => unknown) | undefined;
 
@@ -47,6 +48,7 @@ export interface ILevelDbParsedRecord {
   keyBytes: Uint8Array;
   value?: Uint8Array;
   isDeleted?: boolean;
+  sequenceNumber?: string;
   sourceKind: "ldb" | "log";
   sourcePath?: string;
 }
@@ -79,6 +81,8 @@ export interface IChunkCoordinate {
   x: number;
   z: number;
   dimension: number;
+  hasDeletion?: boolean;
+  requiresReload?: boolean;
 }
 
 export default class LevelDb implements IErrorable {
@@ -112,6 +116,7 @@ export default class LevelDb implements IErrorable {
 
   /** Whether lazy loading mode is enabled */
   private _isLazyMode = false;
+  private _ldbSequenceByKey = new Map<string, bigint>();
 
   /** Maximum keys to keep in memory during lazy mode */
   private _maxKeysInMemory = 50000;
@@ -124,6 +129,8 @@ export default class LevelDb implements IErrorable {
 
   /** Whether initial metadata has been loaded */
   private _isInitialized = false;
+  private _incrementalMetadataChanged = false;
+  private _incrementalRepopulatedKeys = new Set<string>();
 
   private static readonly _yieldInterval = 10;
   private static _nodeZlib: INodeZlib | false | undefined;
@@ -136,6 +143,10 @@ export default class LevelDb implements IErrorable {
   /** Get the file index for lazy loading */
   get index(): LevelDbIndex | undefined {
     return this._index;
+  }
+
+  get incrementalMetadataChanged(): boolean {
+    return this._incrementalMetadataChanged;
   }
 
   private static _getNodeZlib(): INodeZlib | undefined {
@@ -204,6 +215,13 @@ export default class LevelDb implements IErrorable {
     this.context = context;
   }
 
+  public deleteKey(key: string, clearSequence = false): boolean {
+    if (clearSequence) {
+      this._ldbSequenceByKey.delete(key);
+    }
+    return this.keys.delete(key);
+  }
+
   private _pushError(message: string, contextIn?: string) {
     this.isInErrorState = true;
 
@@ -231,6 +249,8 @@ export default class LevelDb implements IErrorable {
 
   public async init(log?: (message: string) => Promise<void>, options?: { unloadFilesAfterParse?: boolean }) {
     this.keys = new Map<string, LevelKeyValue | false | undefined>();
+    this._ldbSequenceByKey = new Map();
+    this._incrementalRepopulatedKeys = new Set();
     this.isInErrorState = false;
     this.errorMessages = undefined;
 
@@ -353,6 +373,7 @@ export default class LevelDb implements IErrorable {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     }
+
   }
 
   public async forEachRecord(
@@ -487,6 +508,8 @@ export default class LevelDb implements IErrorable {
    */
   public async initLazy(options?: ILevelDbInitOptions): Promise<void> {
     this.keys = new Map<string, LevelKeyValue | false | undefined>();
+    this._ldbSequenceByKey = new Map();
+    this._incrementalRepopulatedKeys = new Set();
     this.isInErrorState = false;
     this.errorMessages = undefined;
     this._isLazyMode = true;
@@ -648,8 +671,9 @@ export default class LevelDb implements IErrorable {
    * @returns Array of unique chunk coordinates affected by keys in this file
    */
   public async parseIncrementalFile(file: IFile): Promise<IChunkCoordinate[]> {
-    const affectedChunks: IChunkCoordinate[] = [];
-    const seenChunks = new Set<string>();
+    const affectedChunks = new Map<string, IChunkCoordinate>();
+    this._incrementalMetadataChanged = false;
+    this._incrementalRepopulatedKeys = new Set();
 
     // For incremental updates, always force reload the file content
     // The file may have been updated (especially .log files which are append-only)
@@ -660,7 +684,7 @@ export default class LevelDb implements IErrorable {
 
     const content = file.content;
     if (!(content instanceof Uint8Array) || content.length === 0) {
-      return affectedChunks;
+      return [];
     }
 
     const isLogFile = file.name.toLowerCase().endsWith(".log");
@@ -673,7 +697,7 @@ export default class LevelDb implements IErrorable {
     if (isLogFile && currentSize <= previousSize) {
       // File hasn't grown, no new data
       file.unload();
-      return affectedChunks;
+      return [];
     }
 
     // Track keys before parsing
@@ -692,8 +716,6 @@ export default class LevelDb implements IErrorable {
       // For log files that have grown, find all keys that now have different values
       // (parseLogContent creates new LevelKeyValue objects, so any updated key will have a different reference)
       for (const [keyname, keyValue] of this.keys) {
-        if (!keyValue || typeof keyValue === "boolean") continue;
-
         const prevValue = keysBefore.get(keyname);
 
         // Skip if key existed with same object reference (wasn't updated)
@@ -701,9 +723,25 @@ export default class LevelDb implements IErrorable {
           continue;
         }
 
+        if (this._incrementalRepopulatedKeys.has(keyname)) {
+          continue;
+        }
+
+        if (keyname === "DimensionNameIdTable") {
+          this._incrementalMetadataChanged = true;
+          continue;
+        }
+
+        if (keyValue === false) {
+          this._extractChunkFromKey(keyname, affectedChunks, true);
+          continue;
+        }
+
+        if (!keyValue) continue;
+
         // This is either a new key or an updated key (different object reference)
         // Extract chunk coordinates
-        this._extractChunkFromKey(keyname, seenChunks, affectedChunks);
+        this._extractChunkFromKey(keyname, affectedChunks);
       }
     } else {
       // For LDB files, use the original approach of tracking new/updated keys
@@ -711,14 +749,33 @@ export default class LevelDb implements IErrorable {
 
       // Find new/updated keys and extract chunk coordinates
       for (const [keyname, keyValue] of this.keys) {
-        if (!keyValue) continue;
-
         const prevValue = keysBefore.get(keyname);
         if (prevValue === keyValue) continue; // Same object reference = no change
 
-        this._extractChunkFromKey(keyname, seenChunks, affectedChunks);
+        if (this._incrementalRepopulatedKeys.has(keyname)) {
+          continue;
+        }
+
+        if (keyname === "DimensionNameIdTable") {
+          this._incrementalMetadataChanged = true;
+          continue;
+        }
+
+        if (keyValue === false) {
+          this._extractChunkFromKey(keyname, affectedChunks, true);
+          continue;
+        }
+
+        if (!keyValue) continue;
+
+        this._extractChunkFromKey(keyname, affectedChunks);
       }
     }
+
+    for (const repopulatedKey of this._incrementalRepopulatedKeys) {
+      this.keys.delete(repopulatedKey);
+    }
+    this._incrementalRepopulatedKeys.clear();
 
     // Unload file content to free memory
     file.unload();
@@ -730,71 +787,48 @@ export default class LevelDb implements IErrorable {
       this.ldbFiles.push(file);
     }
 
-    return affectedChunks;
+    return Array.from(affectedChunks.values());
   }
 
   /**
    * Extract chunk coordinates from a key name if it represents chunk data.
    */
-  private _extractChunkFromKey(keyname: string, seenChunks: Set<string>, affectedChunks: IChunkCoordinate[]): boolean {
+  private _extractChunkFromKey(
+    keyname: string,
+    affectedChunks: Map<string, IChunkCoordinate>,
+    hasDeletion = false
+  ): boolean {
     // Extract chunk coordinates from key (9-14 byte keys encode chunk data)
     if (keyname.length < 9 || keyname.length > 14) {
       return false;
     }
 
-    // Skip named keys
-    if (
-      keyname.startsWith("AutonomousEntities") ||
-      keyname.startsWith("schedulerWT") ||
-      keyname.startsWith("Overworld") ||
-      keyname.startsWith("BiomeData") ||
-      keyname.startsWith("digp") ||
-      keyname.startsWith("actorprefix") ||
-      keyname.startsWith("player") ||
-      keyname.startsWith("portals")
-    ) {
+    if (WorldDataMetricsReducer.isNamedWorldRecordKey(keyname)) {
       return false;
     }
 
-    const hasDimensionParam = keyname.length >= 13;
-
-    const x = DataUtilities.getSignedInteger(
-      keyname.charCodeAt(0),
-      keyname.charCodeAt(1),
-      keyname.charCodeAt(2),
-      keyname.charCodeAt(3),
-      true
-    );
-    const z = DataUtilities.getSignedInteger(
-      keyname.charCodeAt(4),
-      keyname.charCodeAt(5),
-      keyname.charCodeAt(6),
-      keyname.charCodeAt(7),
-      true
-    );
-    let dim = 0;
-
-    if (hasDimensionParam) {
-      dim = DataUtilities.getSignedInteger(
-        keyname.charCodeAt(8),
-        keyname.charCodeAt(9),
-        keyname.charCodeAt(10),
-        keyname.charCodeAt(11),
-        true
-      );
-
-      if (dim < 0 || dim > 2) {
-        return false; // Invalid dimension
-      }
+    const keyBytes = new Uint8Array(keyname.length);
+    for (let index = 0; index < keyname.length; index++) {
+      keyBytes[index] = keyname.charCodeAt(index);
     }
 
-    // Track unique chunks
-    const chunkKey = `${dim}_${x}_${z}`;
-    if (!seenChunks.has(chunkKey)) {
-      seenChunks.add(chunkKey);
-      affectedChunks.push({ x, z, dimension: dim });
+    const chunkMetadata = WorldDataMetricsReducer.getChunkRecordMetadata(keyBytes);
+    if (!chunkMetadata) {
+      return false;
+    }
+
+    const { x, z, dimension: dim, chunkKey } = chunkMetadata;
+    const requiresReload = dim >= 1000;
+    const existingChunk = affectedChunks.get(chunkKey);
+    if (!existingChunk) {
+      affectedChunks.set(chunkKey, { x, z, dimension: dim, hasDeletion, requiresReload });
       return true;
     }
+
+    if (hasDeletion) {
+      existingChunk.hasDeletion = true;
+    }
+
     return false;
   }
 
@@ -888,7 +922,7 @@ export default class LevelDb implements IErrorable {
    * Clear all loaded keys and reset to just the index metadata.
    * Useful for freeing memory after processing a world.
    */
-  public clearLoadedKeys(): void {
+  public clearLoadedKeys(clearSequence = true): void {
     for (const [key, value] of this.keys) {
       // value can be LevelKeyValue, false, or undefined
       if (value && typeof value !== "boolean") {
@@ -896,6 +930,10 @@ export default class LevelDb implements IErrorable {
       }
     }
     this.keys.clear();
+    this._incrementalRepopulatedKeys.clear();
+    if (clearSequence) {
+      this._ldbSequenceByKey.clear();
+    }
     this._keyAccessOrder = [];
     this._loadedKeys.clear();
 
@@ -974,16 +1012,15 @@ export default class LevelDb implements IErrorable {
     }
 
     if (indexContent) {
-      const indexKeys: { [id: string]: LevelKeyValue | undefined } = {};
+      const indexKeys: LevelKeyValue[] = [];
+      const seenUserKeys = new Set<string>();
 
       if (!this.parseIndexBytes(indexContent, 0, indexContent.length, indexKeys, context)) {
         return false;
       }
 
-      for (const lastKeyInBlock in indexKeys) {
-        const indexKey = indexKeys[lastKeyInBlock];
-
-        if (indexKey && indexKey.value) {
+      for (const indexKey of indexKeys) {
+        if (indexKey.value) {
           const indexBytes = indexKey.value;
           let indexByteIndex = 0;
 
@@ -1017,7 +1054,14 @@ export default class LevelDb implements IErrorable {
             blockContent = blockContentCompressed;
           }
 
-          keysParsed += this.parseLdbBlockBytes(blockContent, 0, blockContent.length, context, visitorState);
+          keysParsed += this.parseLdbBlockBytes(
+            blockContent,
+            0,
+            blockContent.length,
+            context,
+            visitorState,
+            seenUserKeys
+          );
         } else {
           this._pushError("Could not find index key.", context);
         }
@@ -1035,7 +1079,7 @@ export default class LevelDb implements IErrorable {
     data: Uint8Array,
     offset: number,
     length: number,
-    indexKeys: { [id: string]: LevelKeyValue | undefined },
+    indexKeys: LevelKeyValue[],
     context?: string
   ) {
     let index = offset;
@@ -1055,13 +1099,18 @@ export default class LevelDb implements IErrorable {
     while (index < offset + length - endRestartSize) {
       const lb = new LevelKeyValue();
 
-      lb.loadFromLdb(data, index, lastKeyValuePair);
+      try {
+        lb.loadFromLdb(data, index, lastKeyValuePair, offset + length - endRestartSize);
+      } catch (e) {
+        this._pushError(`Could not parse LevelDB index entry: ${e}`, context);
+        return false;
+      }
 
       const key = lb.key;
       lastKeyValuePair = lb;
 
       if (Utilities.isUsableAsObjectKey(key)) {
-        indexKeys[key] = lb;
+        indexKeys.push(lb);
       }
 
       if (lb.length === undefined) {
@@ -1072,6 +1121,10 @@ export default class LevelDb implements IErrorable {
       index += lb.length;
     }
 
+    if (lastKeyValuePair) {
+      lastKeyValuePair.internalKeyBytes = undefined;
+    }
+
     return true;
   }
 
@@ -1080,7 +1133,8 @@ export default class LevelDb implements IErrorable {
     offset: number,
     length: number,
     context?: string,
-    visitorState?: ILevelDbRecordVisitorState
+    visitorState?: ILevelDbRecordVisitorState,
+    seenUserKeys: Set<string> = new Set()
   ) {
     let index = offset;
     let keysParsed = 0;
@@ -1104,27 +1158,41 @@ export default class LevelDb implements IErrorable {
     while (index < offset + length - endRestartSize) {
       const lb = new LevelKeyValue();
 
-      lb.loadFromLdb(data, index, lastKeyValuePair);
+      try {
+        lb.loadFromLdb(data, index, lastKeyValuePair, offset + length - endRestartSize);
+      } catch (e) {
+        this._pushError(`Could not parse LevelDB data entry: ${e}`, context);
+        return keysParsed;
+      }
 
       const key = lb.key;
       lastKeyValuePair = lb;
 
-      if (Utilities.isUsableAsObjectKey(key)) {
+      if (Utilities.isUsableAsObjectKey(key) && !seenUserKeys.has(key)) {
+        seenUserKeys.add(key);
+
         if (visitorState) {
           const keyBytes = lb.keyBytes;
 
-          if (keyBytes) {
+          if (keyBytes && (!lb.isDeleted || visitorState.options.includeDeleted)) {
             visitorState.visitor({
               ordinal: visitorState.ordinal++,
               key: key,
               keyBytes: keyBytes,
               value: visitorState.options.includeValues ? lb.value : undefined,
+              isDeleted: lb.isDeleted,
+              sequenceNumber: lb.sequenceNumber.toString(),
               sourceKind: visitorState.sourceKind,
               sourcePath: visitorState.sourcePath,
             });
           }
         } else {
-          this.keys.set(key, lb);
+          const sequenceDisposition = this._getSequenceDisposition(key, lb.sequenceNumber);
+          if (sequenceDisposition) {
+            this._trackSequenceDisposition(key, sequenceDisposition);
+            this._ldbSequenceByKey.set(key, lb.sequenceNumber);
+            this.keys.set(key, lb.isDeleted ? false : lb);
+          }
         }
       }
 
@@ -1134,6 +1202,10 @@ export default class LevelDb implements IErrorable {
 
       keysParsed++;
       index += lb.length;
+    }
+
+    if (lastKeyValuePair) {
+      lastKeyValuePair.internalKeyBytes = undefined;
     }
 
     return keysParsed;
@@ -1221,46 +1293,66 @@ export default class LevelDb implements IErrorable {
     visitorState?: ILevelDbRecordVisitorState
   ) {
     const startIndex = index;
-    // first 8 bytes are sequence number; next 4 are record count; skip over those for now.
+    const recordEnd = startIndex + length;
+
+    if (length < 12 || startIndex < 0 || recordEnd > content.length) {
+      this._pushError("Incomplete LevelDB WriteBatch record.", context);
+      return 0;
+    }
+
+    let batchSequence = 0n;
+    for (let sequenceIndex = 7; sequenceIndex >= 0; sequenceIndex--) {
+      batchSequence = (batchSequence << 8n) | BigInt(content[startIndex + sequenceIndex]);
+    }
+
+    // First 8 bytes are the starting sequence number; next 4 are record count.
     index += 12;
     let keysParsed = 0;
 
-    while (index <= startIndex + length - 5) {
+    while (index <= recordEnd - 5) {
       const isLive = content[index];
       index++;
 
-      const keyLength = new Varint(content, index);
+      const keyLength = this._readBoundedLogVarint(content, index, recordEnd, context);
+      if (!keyLength) {
+        return keysParsed;
+      }
       index += keyLength.byteLength;
 
-      const keyBytes = new Uint8Array(keyLength.value);
-      for (let i = 0; i < keyLength.value; i++) {
-        keyBytes[i] = content[index + i];
+      if (keyLength.value > recordEnd - index) {
+        this._pushError("LevelDB WriteBatch key length exceeds the record boundary.", context);
+        return keysParsed;
       }
 
+      const keyBytes = content.slice(index, index + keyLength.value);
       index += keyLength.value;
 
-      if (index > content.length) {
+      if (index > recordEnd) {
         this._pushError("Unexpected log file length issue.", context);
       }
 
-      if (index <= content.length) {
+      if (index <= recordEnd) {
         const key = Utilities.getAsciiStringFromUint8Array(keyBytes);
 
         if (key === undefined) {
           this._pushError("Unexpected empty key in a log file. File could be unreadable.", context);
         }
 
+        const recordSequence = batchSequence + BigInt(keysParsed);
         keysParsed++;
 
         if (isLive) {
-          if (index >= content.length) {
+          if (index >= recordEnd) {
             this._pushError("Unexpectedly leftover content in a log file. File could be unreadable.", context);
           }
 
-          const dataLength = new Varint(content, index);
+          const dataLength = this._readBoundedLogVarint(content, index, recordEnd, context);
+          if (!dataLength) {
+            return keysParsed;
+          }
           index += dataLength.byteLength;
 
-          if (dataLength.value + index <= content.buffer.byteLength) {
+          if (dataLength.value + index <= recordEnd) {
             const valueStartIndex = index;
             index += dataLength.value;
 
@@ -1277,6 +1369,7 @@ export default class LevelDb implements IErrorable {
                   key: key,
                   keyBytes: keyBytes,
                   value: visitorState.options.includeValues ? data : undefined,
+                  sequenceNumber: recordSequence.toString(),
                   sourceKind: visitorState.sourceKind,
                   sourcePath: visitorState.sourcePath,
                 });
@@ -1292,10 +1385,19 @@ export default class LevelDb implements IErrorable {
                 kv.keyDelta = key;
                 kv.unsharedKeyBytes = keyBytes;
                 kv.value = data;
+                kv.sequenceNumber = recordSequence;
 
-                this.keys.set(key, kv);
+                const sequenceDisposition = this._getSequenceDisposition(key, recordSequence);
+                if (sequenceDisposition) {
+                  this._trackSequenceDisposition(key, sequenceDisposition);
+                  this._ldbSequenceByKey.set(key, recordSequence);
+                  this.keys.set(key, kv);
+                }
               }
             }
+          } else {
+            this._pushError("LevelDB WriteBatch value length exceeds the record boundary.", context);
+            return keysParsed;
           }
         } else {
           if (Utilities.isUsableAsObjectKey(key)) {
@@ -1306,18 +1408,60 @@ export default class LevelDb implements IErrorable {
                   key: key,
                   keyBytes: keyBytes,
                   isDeleted: true,
+                  sequenceNumber: recordSequence.toString(),
                   sourceKind: visitorState.sourceKind,
                   sourcePath: visitorState.sourcePath,
                 });
               }
             } else {
-              this.keys.set(key, false);
+              const sequenceDisposition = this._getSequenceDisposition(key, recordSequence);
+              if (sequenceDisposition) {
+                this._trackSequenceDisposition(key, sequenceDisposition);
+                this._ldbSequenceByKey.set(key, recordSequence);
+                this.keys.set(key, false);
+              }
             }
           }
         }
       }
     }
     return keysParsed;
+  }
+
+  private _getSequenceDisposition(key: string, sequenceNumber: bigint): "updated" | "repopulated" | undefined {
+    const currentSequence = this._ldbSequenceByKey.get(key);
+    if (currentSequence === undefined || sequenceNumber > currentSequence) {
+      return "updated";
+    }
+    if (sequenceNumber === currentSequence && !this.keys.has(key)) {
+      return "repopulated";
+    }
+
+    return undefined;
+  }
+
+  private _trackSequenceDisposition(key: string, disposition: "updated" | "repopulated") {
+    if (disposition === "repopulated") {
+      this._incrementalRepopulatedKeys.add(key);
+    } else {
+      this._incrementalRepopulatedKeys.delete(key);
+    }
+  }
+
+  private _readBoundedLogVarint(
+    content: Uint8Array,
+    index: number,
+    recordEnd: number,
+    context?: string
+  ): Varint | undefined {
+    for (let cursor = index; cursor < recordEnd && cursor - index < 10; cursor++) {
+      if ((content[cursor] & 0x80) === 0) {
+        return new Varint(content, index);
+      }
+    }
+
+    this._pushError("LevelDB WriteBatch contains an incomplete or oversized varint.", context);
+    return undefined;
   }
 
   parseManifestContent(content: Uint8Array, context?: string) {

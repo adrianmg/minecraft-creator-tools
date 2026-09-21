@@ -17,6 +17,8 @@ import ProjectInfoSet from "../info/ProjectInfoSet";
 import ContentIndex from "../core/ContentIndex";
 import EnvSettings from "../devproject/EnvSettings";
 import Utilities from "../core/Utilities";
+import { ValidationRuleDefinition } from "../info/tests/ValidationRuleDefinition";
+import { ScriptModuleValidationRules } from "./ScriptModuleManagerData";
 
 /**
  * Validates and updates script module dependencies in behavior pack manifests and npm packages.
@@ -26,6 +28,8 @@ import Utilities from "../core/Utilities";
 export default class ScriptModuleManager implements IProjectInfoGenerator, IProjectUpdater {
   id = "SCRIPTMODULE";
   title = "Script Modules";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = ScriptModuleValidationRules;
 
   modulesInUse: { [name: string]: { version: string; manifest: BehaviorManifestDefinition; item: ProjectItem }[] } = {};
   packRegsInUse: { [name: string]: { package: NpmPackageDefinition; isDevDependency: boolean; version: string }[] } =

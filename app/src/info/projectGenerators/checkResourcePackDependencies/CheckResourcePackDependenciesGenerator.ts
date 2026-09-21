@@ -9,17 +9,23 @@ import Utilities from "../../../core/Utilities";
 import ProjectItem from "../../../app/ProjectItem";
 import BehaviorManifestDefinition from "../../../minecraft/BehaviorManifestDefinition";
 import ResourceManifestDefinition from "../../../minecraft/ResourceManifestDefinition";
-import { CheckResourcePackDependenciesGeneratorTest } from "./CheckResourcePackDependenciesData";
+import {
+  CheckResourcePackDependenciesGeneratorTest,
+  ResourcePackDependenciesValidationRules,
+} from "./CheckResourcePackDependenciesData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 /**
  * Validates resource pack dependencies in behavior pack manifests.
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/rpdepends.form.json} for topic definitions
  */
-export default class CheckResourcePackDependenciesGenerator implements IProjectInfoGenerator {
+export default class CheckResourcePackDependenciesGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "RPDEPENDS";
   title = "Resource Pack Dependencies";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = ResourcePackDependenciesValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {
     info.invalidManifestJson = infoSet.getSummedDataValue(

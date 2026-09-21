@@ -9,6 +9,7 @@ import EntityTypeDefinition from "../minecraft/EntityTypeDefinition";
 import MinecraftDefinitions from "../minecraft/MinecraftDefinitions";
 import ModelDesignUtilities from "../minecraft/ModelDesignUtilities";
 import HttpStorage from "../storage/HttpStorage";
+import IFile from "../storage/IFile";
 import IFolder from "../storage/IFolder";
 import StorageUtilities from "../storage/StorageUtilities";
 import CreatorToolsHost from "./CreatorToolsHost";
@@ -21,6 +22,17 @@ import ProjectItemUtilities from "./ProjectItemUtilities";
 import { NewEntityTypeAddMode } from "./ProjectUtilities";
 
 export const STANDARD_NAME_TOKEN = "_name_";
+
+// Pack-wide catalog files. A gallery item ships its own copy of these, but they belong to the whole
+// resource pack rather than to the thing being added, so copying one over the top of the project's
+// version would delete every other block's entries. These are deep-merged on copy instead.
+export const MERGE_ON_COPY_FILE_NAMES = [
+  "blocks.json",
+  "terrain_texture.json",
+  "item_texture.json",
+  "sound_definitions.json",
+  "music_definitions.json",
+];
 
 export const MATERIAL_NAMES_TO_FIXUP = [
   "cold",
@@ -405,6 +417,14 @@ export default class ProjectCreateManager {
         if (blockType) {
           await blockType.ensureBlockAndTerrainLinks(project, creationData);
         }
+
+        // _inferNewItems only discovers the new files; it does not link them to each other. The block
+        // editor decides whether a block has a texture by looking for the terrain texture catalog among
+        // the block's childItems, so link the new block now that its catalog entries exist. This has to
+        // run after ensureBlockAndTerrainLinks: relation building asks the catalog whether it knows the
+        // block's texture id, and for unit cube blocks the entry is only written by that call.
+        const { default: ProjectItemRelations } = await import("./ProjectItemRelations");
+        await ProjectItemRelations.calculateForItem(blockTypeItem);
       }
     }
 
@@ -485,6 +505,46 @@ export default class ProjectCreateManager {
 
     await project.inferProjectItemsFromFiles(true);
     await project.save();
+  }
+
+  /**
+   * Writes one file copied out of a gallery item (or an existing project item) into the project.
+   *
+   * Most files belong solely to the thing being added, so a plain overwrite is right. The pack-wide
+   * catalogs are the exception: they are shared by every block and item in the pack, so the copied
+   * entries are merged into whatever the project already has rather than replacing the file.
+   *
+   * Either way the cached parse is dropped afterwards. Definitions hold onto a parsed copy of their
+   * file and only reparse when unloaded, so without this a terrain texture catalog that the editor
+   * already opened keeps answering questions about its previous contents and the new block looks like
+   * it has no texture.
+   */
+  private static async _writeCopiedFile(targetFile: IFile, content: string | Uint8Array) {
+    if (typeof content === "string" && MERGE_ON_COPY_FILE_NAMES.includes(targetFile.name.toLowerCase())) {
+      if (!targetFile.isContentLoaded) {
+        await targetFile.loadContent();
+      }
+
+      const existing = StorageUtilities.getJsonObject(targetFile);
+
+      if (existing && typeof existing === "object") {
+        try {
+          const incoming = JSON.parse(Utilities.fixJsonContent(content));
+
+          if (incoming && typeof incoming === "object") {
+            targetFile.setContent(JSON.stringify(StorageUtilities.deepMergeJsonObjects(existing, incoming), null, 2));
+            StorageUtilities.invalidateParsedContent(targetFile);
+            return;
+          }
+        } catch (e) {
+          // A catalog that can't be parsed can't be merged safely, so fall through to overwriting it.
+          Log.error("Could not merge '" + targetFile.name + "' while copying gallery content: " + e);
+        }
+      }
+    }
+
+    targetFile.setContent(content);
+    StorageUtilities.invalidateParsedContent(targetFile);
   }
 
   static async copyGalleryPackFilesAndFixupIds(
@@ -677,7 +737,7 @@ export default class ProjectCreateManager {
                 messagerUpdater("Updating '" + targetFile.fullPath + "'");
               }
 
-              targetFile.setContent(content);
+              await ProjectCreateManager._writeCopiedFile(targetFile, content);
             }
           }
         }
@@ -741,7 +801,7 @@ export default class ProjectCreateManager {
                 messagerUpdater("Updating '" + targetFile.fullPath + "'");
               }
 
-              targetFile.setContent(content);
+              await ProjectCreateManager._writeCopiedFile(targetFile, content);
             }
           }
         }
@@ -1016,7 +1076,7 @@ export default class ProjectCreateManager {
             messagerUpdater("Updating '" + targetFile.fullPath + "'");
           }
 
-          targetFile.setContent(content);
+          await ProjectCreateManager._writeCopiedFile(targetFile, content);
         }
       }
     }

@@ -15,11 +15,11 @@ import ContentIndex from "../../../core/ContentIndex";
 import MinecraftDefinitions from "../../../minecraft/MinecraftDefinitions";
 import ProjectItemUtilities from "../../../app/ProjectItemUtilities";
 import { JSONSchema7, validate } from "json-schema";
-import { JsonSchemaItemInfoGeneratorTest } from "./JsonSchemaItemInfoData";
+import { JsonSchemaErrorBase, JsonSchemaItemInfoGeneratorTest, JsonSchemaValidationRules } from "./JsonSchemaItemInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { JsonSchemaItemInfoGeneratorTest };
 
-const JsonSchemaErrorBase = 100;
 const NotCurrentFormatVersionBase = 1100;
 
 /**
@@ -27,10 +27,12 @@ const NotCurrentFormatVersionBase = 1100;
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/json.form.json} for topic definitions
  */
-export default class JsonSchemaItemInfoGenerator implements IProjectInfoItemGenerator {
+export default class JsonSchemaItemInfoGenerator implements IProjectInfoItemGenerator, IValidationRuleProvider {
   id = "JSON";
   title = "JSON Schema Validation";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = JsonSchemaValidationRules;
 
   constructor() {
     this.loadSchema = this.loadSchema.bind(this);

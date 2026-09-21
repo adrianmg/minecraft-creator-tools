@@ -9,7 +9,8 @@ import ProjectInfoSet from "../../ProjectInfoSet";
 import Project from "../../../app/Project";
 import ContentIndex from "../../../core/ContentIndex";
 import { PackContainerFolderHints, PackFolderHints } from "../../../storage/StorageUtilities";
-import { PathLengthFileGeneratorTest } from "./PathLengthFileGeneratorData";
+import { PathLengthFileGeneratorTest, PathLengthValidationRules } from "./PathLengthFileGeneratorData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { PathLengthFileGeneratorTest };
 
@@ -18,10 +19,12 @@ export { PathLengthFileGeneratorTest };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/pathlength.form.json} for topic definitions
  */
-export default class PathLengthFileGenerator implements IProjectFileInfoGenerator {
+export default class PathLengthFileGenerator implements IProjectFileInfoGenerator, IValidationRuleProvider {
   id = "PATHLENGTH";
   title = "Path Length";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = PathLengthValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {}
 

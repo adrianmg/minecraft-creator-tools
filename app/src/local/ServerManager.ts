@@ -214,7 +214,13 @@ import IMainInfoVersions from "../minecraft/IMainInfoVersions";
 import StorageUtilities from "../storage/StorageUtilities";
 import Log from "../core/Log";
 import DedicatedServer, { DedicatedServerStatus } from "./DedicatedServer";
-import { IStatData, IDebugSessionInfo, IProfilerCaptureEvent } from "../debugger/IMinecraftDebugProtocol";
+import {
+  IStatData,
+  IDebugSessionInfo,
+  IProfilerCaptureEvent,
+  IDiagnosticsTabDescriptor,
+} from "../debugger/IMinecraftDebugProtocol";
+import { IDebuggerStageEventData } from "../debugger/DebuggerLifecycle";
 import Utilities from "../core/Utilities";
 import ContentLogWatcher from "./ContentLogWatcher";
 import CreatorTools from "../app/CreatorTools";
@@ -404,6 +410,8 @@ export default class ServerManager {
   #onDebugPaused = new EventDispatcher<DedicatedServer, string>();
   #onDebugResumed = new EventDispatcher<DedicatedServer, void>();
   #onProfilerCapture = new EventDispatcher<DedicatedServer, IProfilerCaptureEvent>();
+  #onDebugStageChanged = new EventDispatcher<DedicatedServer, IDebuggerStageEventData>();
+  #onDebugSchema = new EventDispatcher<DedicatedServer, IDiagnosticsTabDescriptor[]>();
 
   public get isAnyServerRunning() {
     for (const serverName in this.#servers) {
@@ -528,8 +536,16 @@ export default class ServerManager {
     return this.#onDebugResumed.asEvent();
   }
 
+  public get onDebugStageChanged() {
+    return this.#onDebugStageChanged.asEvent();
+  }
+
   public get onProfilerCapture() {
     return this.#onProfilerCapture.asEvent();
+  }
+
+  public get onDebugSchema() {
+    return this.#onDebugSchema.asEvent();
   }
 
   public get onPlayerConnected() {
@@ -605,6 +621,11 @@ export default class ServerManager {
     this.bubbleDebugConnected = this.bubbleDebugConnected.bind(this);
     this.bubbleDebugDisconnected = this.bubbleDebugDisconnected.bind(this);
     this.bubbleDebugStats = this.bubbleDebugStats.bind(this);
+    this.bubbleDebugPaused = this.bubbleDebugPaused.bind(this);
+    this.bubbleDebugResumed = this.bubbleDebugResumed.bind(this);
+    this.bubbleProfilerCapture = this.bubbleProfilerCapture.bind(this);
+    this.bubbleDebugStageChanged = this.bubbleDebugStageChanged.bind(this);
+    this.bubbleDebugSchema = this.bubbleDebugSchema.bind(this);
 
     // Register process signal handlers for graceful shutdown
     // This ensures child server processes are stopped when the parent is terminated
@@ -742,7 +763,9 @@ export default class ServerManager {
     server.onDebugStats.subscribe(this.bubbleDebugStats);
     server.onDebugPaused.subscribe(this.bubbleDebugPaused);
     server.onDebugResumed.subscribe(this.bubbleDebugResumed);
+    server.onDebugStageChanged.subscribe(this.bubbleDebugStageChanged);
     server.onProfilerCapture.subscribe(this.bubbleProfilerCapture);
+    server.onDebugSchema.subscribe(this.bubbleDebugSchema);
 
     this.#servers[name] = server;
 
@@ -1015,6 +1038,12 @@ export default class ServerManager {
         timestamp: Date.now(),
         slot: slot,
         protocolVersion: sessionInfo.protocolVersion,
+        targetModuleUuid: sessionInfo.targetModuleUuid,
+        plugins: sessionInfo.plugins,
+        host: sessionInfo.host,
+        port: sessionInfo.port,
+        capabilities: sessionInfo.capabilities,
+        ownership: dedicatedServer.debugOwnership,
       });
     }
   }
@@ -1030,6 +1059,22 @@ export default class ServerManager {
         timestamp: Date.now(),
         slot: slot,
         reason: reason,
+        ownership: dedicatedServer.debugOwnership,
+      });
+    }
+  }
+
+  private bubbleDebugSchema(dedicatedServer: DedicatedServer, descriptors: IDiagnosticsTabDescriptor[]) {
+    this.#onDebugSchema.dispatch(dedicatedServer, descriptors);
+
+    // Push WebSocket notification
+    if (this.#httpServer) {
+      const slot = this.getSlotForServer(dedicatedServer);
+      this.#httpServer.notify({
+        eventName: "debugSchema",
+        timestamp: Date.now(),
+        slot: slot,
+        descriptors: descriptors,
       });
     }
   }
@@ -1053,6 +1098,9 @@ export default class ServerManager {
           name: s.name,
           values: s.values,
           parent: s.parent_name || undefined,
+          fullId: s.full_id || undefined,
+          parentFullId: s.parent_full_id || undefined,
+          childrenStringValues: s.children_string_values.length > 0 ? s.children_string_values : undefined,
         })),
       });
     } else {
@@ -1085,6 +1133,25 @@ export default class ServerManager {
         eventName: "debugResumed",
         timestamp: Date.now(),
         slot: slot,
+      });
+    }
+  }
+
+  private bubbleDebugStageChanged(dedicatedServer: DedicatedServer, stageData: IDebuggerStageEventData) {
+    this.#onDebugStageChanged.dispatch(dedicatedServer, stageData);
+
+    // Push WebSocket notification
+    if (this.#httpServer) {
+      const slot = this.getSlotForServer(dedicatedServer);
+      this.#httpServer.notify({
+        eventName: "debugStage",
+        timestamp: Date.now(),
+        slot: slot,
+        stage: stageData.stage,
+        failureKind: stageData.failureKind,
+        message: stageData.errorMessage,
+        detail: stageData.detail,
+        debugPort: stageData.debugPort,
       });
     }
   }
@@ -1999,6 +2066,8 @@ export default class ServerManager {
     newDedicatedServer.onDebugPaused.subscribe(this.bubbleDebugPaused);
     newDedicatedServer.onDebugResumed.subscribe(this.bubbleDebugResumed);
     newDedicatedServer.onProfilerCapture.subscribe(this.bubbleProfilerCapture);
+    newDedicatedServer.onDebugStageChanged.subscribe(this.bubbleDebugStageChanged);
+    newDedicatedServer.onDebugSchema.subscribe(this.bubbleDebugSchema);
 
     this.#activeServersByPort[port] = newDedicatedServer;
     this.#servers[name] = newDedicatedServer;

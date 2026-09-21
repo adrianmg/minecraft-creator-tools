@@ -121,6 +121,8 @@ test.describe("Professional Editor Tests", () => {
     const isReady = await waitForAppReady(page);
     if (!isReady) {
       console.log("[Professional] App did not become ready");
+      test.skip();
+      return;
     }
 
     // Take initial screenshot
@@ -428,7 +430,7 @@ test.describe("Professional Editor Tests", () => {
       await page.keyboard.press(`${modifier}+j`);
       await page.waitForTimeout(800);
 
-      await takeScreenshot(page, "pro-raw-after-unfold-all");  
+      await takeScreenshot(page, "pro-raw-after-unfold-all");
 
       const unfoldedCount = await initialLines.count();
       console.log(`Lines visible after unfolding: ${unfoldedCount}`);
@@ -678,7 +680,13 @@ test.describe("Professional Editor Tests", () => {
         // Breadcrumb evidence (JSON path UI should show current path segments).
         const breadcrumbSegments = page.locator(".jpb-segment");
         const breadcrumbCount = await breadcrumbSegments.count();
-        const breadcrumbText = ((await page.locator(".jpb-container").first().textContent().catch(() => "")) || "").trim();
+        const breadcrumbText = (
+          (await page
+            .locator(".jpb-container")
+            .first()
+            .textContent()
+            .catch(() => "")) || ""
+        ).trim();
         await takeScreenshot(page, "pro-json-ide-breadcrumbs");
         console.log(`JSON breadcrumb segment count: ${breadcrumbCount} text="${breadcrumbText}"`);
         expect(breadcrumbCount).toBeGreaterThanOrEqual(1);
@@ -697,127 +705,138 @@ test.describe("Professional Editor Tests", () => {
           `JSON toolbar discoverability find=${toolbarFindVisible} hover=${toolbarHoverVisible} quickFix=${toolbarQuickFixVisible} references=${toolbarReferencesVisible} rename=${toolbarRenameVisible}`
         );
         expect(
-          toolbarFindVisible && toolbarHoverVisible && toolbarQuickFixVisible && toolbarReferencesVisible && toolbarRenameVisible
+          toolbarFindVisible &&
+            toolbarHoverVisible &&
+            toolbarQuickFixVisible &&
+            toolbarReferencesVisible &&
+            toolbarRenameVisible
         ).toBe(true);
         await takeScreenshot(page, "pro-json-ide-toolbar-actions");
 
         // Hover docs evidence on a Minecraft component key.
-        await page.evaluate(({ lineNumber, modelUri }) => {
-          const monacoRef = (window as any).monaco;
-          const editor = monacoRef?.editor?.getEditors?.()?.[0];
-          const models = monacoRef?.editor?.getModels?.() || [];
-          const targetModel = models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri);
-          if (editor && targetModel) {
-            editor.setModel(targetModel);
-          }
-          if (editor && lineNumber > 0) {
-            editor.revealLineInCenter(lineNumber);
-            editor.setPosition({ lineNumber, column: 12 });
-            editor.focus();
-          }
-        }, { lineNumber: probeSetup?.healthLine ?? -1, modelUri: probeSetup?.modelUri ?? "" });
+        await page.evaluate(
+          ({ lineNumber, modelUri }) => {
+            const monacoRef = (window as any).monaco;
+            const editor = monacoRef?.editor?.getEditors?.()?.[0];
+            const models = monacoRef?.editor?.getModels?.() || [];
+            const targetModel = models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri);
+            if (editor && targetModel) {
+              editor.setModel(targetModel);
+            }
+            if (editor && lineNumber > 0) {
+              editor.revealLineInCenter(lineNumber);
+              editor.setPosition({ lineNumber, column: 12 });
+              editor.focus();
+            }
+          },
+          { lineNumber: probeSetup?.healthLine ?? -1, modelUri: probeSetup?.modelUri ?? "" }
+        );
         await page.waitForTimeout(200);
 
-        const jsonProviderProbe = await page.evaluate(async ({ lineNumber, modelUri }) => {
-          const monacoRef = (window as any).monaco;
-          const editor = monacoRef?.editor?.getEditors?.()?.[0];
-          let model = editor?.getModel?.();
-          const models = monacoRef?.editor?.getModels?.() || [];
-          const preferredModel =
-            models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri) ||
-            models.find((candidate: any) => {
-              const uri = candidate?.uri?.toString?.().toLowerCase?.() || "";
-              const language = candidate?.getLanguageId?.()?.toLowerCase?.() || "";
-              return language === "json" && uri.startsWith("file://");
-            }) ||
-            model;
-          if (editor && preferredModel) {
-            editor.setModel(preferredModel);
-            model = preferredModel;
-          }
-          const enhancements = (window as any).__mctJsonEnhancements;
+        const jsonProviderProbe = await page.evaluate(
+          async ({ lineNumber, modelUri }) => {
+            const monacoRef = (window as any).monaco;
+            const editor = monacoRef?.editor?.getEditors?.()?.[0];
+            let model = editor?.getModel?.();
+            const models = monacoRef?.editor?.getModels?.() || [];
+            const preferredModel =
+              models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri) ||
+              models.find((candidate: any) => {
+                const uri = candidate?.uri?.toString?.().toLowerCase?.() || "";
+                const language = candidate?.getLanguageId?.()?.toLowerCase?.() || "";
+                return language === "json" && uri.startsWith("file://");
+              }) ||
+              model;
+            if (editor && preferredModel) {
+              editor.setModel(preferredModel);
+              model = preferredModel;
+            }
+            const enhancements = (window as any).__mctJsonEnhancements;
 
-          if (!editor || !model || !enhancements) {
+            if (!editor || !model || !enhancements) {
+              return {
+                hoverDocs: 0,
+                codeLens: 0,
+                inlayHints: 0,
+                codeActions: 0,
+              };
+            }
+
+            const lineCount = Math.max(1, model.getLineCount());
+            const probeLine = Math.min(lineCount, Math.max(1, Number(lineNumber) || 1));
+            const modelText = model.getValue();
+            const healthOffset = modelText.indexOf("minecraft:health");
+            const probePosition =
+              healthOffset >= 0 ? model.getPositionAt(healthOffset + 2) : new monacoRef.Position(probeLine, 12);
+            const fullRange = new monacoRef.Range(1, 1, Math.max(1, model.getLineCount()), 1);
+            const lineLength = Math.max(1, model.getLineLength(probeLine));
+            const lineRange = new monacoRef.Range(probeLine, 1, probeLine, lineLength);
+
+            const token = { isCancellationRequested: false } as any;
+
+            const hoverProvider = enhancements.hoverProvider;
+            const codeLensProvider = enhancements.codeLensProvider;
+            const inlayHintsProvider = enhancements.inlayHintsProvider;
+            const codeActionProvider = enhancements.codeActionProvider;
+            const resolvedPath =
+              enhancements.pathResolver?.getPathAtOffset?.(modelText, model.getOffsetAt(probePosition))?.path || [];
+
+            const hover = hoverProvider?.provideHover
+              ? await hoverProvider.provideHover(model, probePosition, token)
+              : undefined;
+            const lenses = codeLensProvider?.provideCodeLenses
+              ? await codeLensProvider.provideCodeLenses(model, token)
+              : undefined;
+            const hints = inlayHintsProvider?.provideInlayHints
+              ? await inlayHintsProvider.provideInlayHints(model, fullRange, token)
+              : undefined;
+            const actions = codeActionProvider?.provideCodeActions
+              ? await codeActionProvider.provideCodeActions(
+                  model,
+                  lineRange,
+                  {
+                    markers: [],
+                    trigger: monacoRef.languages.CodeActionTriggerType.Invoke,
+                  },
+                  token
+                )
+              : undefined;
+
             return {
-              hoverDocs: 0,
-              codeLens: 0,
-              inlayHints: 0,
-              codeActions: 0,
+              hoverDocs: hover?.contents?.length ?? 0,
+              codeLens: lenses?.lenses?.length ?? 0,
+              inlayHints: hints?.hints?.length ?? 0,
+              codeActions: actions?.actions?.length ?? 0,
+              resolvedPathLength: resolvedPath.length,
+              resolvedPathText: resolvedPath.join(" > "),
             };
-          }
-
-          const lineCount = Math.max(1, model.getLineCount());
-          const probeLine = Math.min(lineCount, Math.max(1, Number(lineNumber) || 1));
-          const modelText = model.getValue();
-          const healthOffset = modelText.indexOf("minecraft:health");
-          const probePosition =
-            healthOffset >= 0
-              ? model.getPositionAt(healthOffset + 2)
-              : new monacoRef.Position(probeLine, 12);
-          const fullRange = new monacoRef.Range(1, 1, Math.max(1, model.getLineCount()), 1);
-          const lineLength = Math.max(1, model.getLineLength(probeLine));
-          const lineRange = new monacoRef.Range(probeLine, 1, probeLine, lineLength);
-
-          const token = { isCancellationRequested: false } as any;
-
-          const hoverProvider = enhancements.hoverProvider;
-          const codeLensProvider = enhancements.codeLensProvider;
-          const inlayHintsProvider = enhancements.inlayHintsProvider;
-          const codeActionProvider = enhancements.codeActionProvider;
-          const resolvedPath =
-            enhancements.pathResolver?.getPathAtOffset?.(modelText, model.getOffsetAt(probePosition))?.path || [];
-
-          const hover = hoverProvider?.provideHover
-            ? await hoverProvider.provideHover(model, probePosition, token)
-            : undefined;
-          const lenses = codeLensProvider?.provideCodeLenses
-            ? await codeLensProvider.provideCodeLenses(model, token)
-            : undefined;
-          const hints = inlayHintsProvider?.provideInlayHints
-            ? await inlayHintsProvider.provideInlayHints(model, fullRange, token)
-            : undefined;
-          const actions = codeActionProvider?.provideCodeActions
-            ? await codeActionProvider.provideCodeActions(
-                model,
-                lineRange,
-                {
-                  markers: [],
-                  trigger: monacoRef.languages.CodeActionTriggerType.Invoke,
-                },
-                token
-              )
-            : undefined;
-
-          return {
-            hoverDocs: hover?.contents?.length ?? 0,
-            codeLens: lenses?.lenses?.length ?? 0,
-            inlayHints: hints?.hints?.length ?? 0,
-            codeActions: actions?.actions?.length ?? 0,
-            resolvedPathLength: resolvedPath.length,
-            resolvedPathText: resolvedPath.join(" > "),
-          };
-        }, { lineNumber: probeSetup?.healthLine ?? 1, modelUri: probeSetup?.modelUri ?? "" });
+          },
+          { lineNumber: probeSetup?.healthLine ?? 1, modelUri: probeSetup?.modelUri ?? "" }
+        );
 
         await hoverButton.click({ force: true });
         await page.waitForTimeout(300);
-        await page.evaluate(async ({ lineNumber, modelUri }) => {
-          const monacoRef = (window as any).monaco;
-          const editor = monacoRef?.editor?.getEditors?.()?.[0];
-          const models = monacoRef?.editor?.getModels?.() || [];
-          const targetModel = models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri);
-          if (editor && targetModel) {
-            editor.setModel(targetModel);
-          }
-          if (editor && lineNumber > 0) {
-            editor.revealLineInCenter(lineNumber);
-            editor.setPosition({ lineNumber, column: 12 });
-            editor.focus();
-            const showHover = editor.getAction("editor.action.showHover");
-            if (showHover) {
-              await showHover.run();
+        await page.evaluate(
+          async ({ lineNumber, modelUri }) => {
+            const monacoRef = (window as any).monaco;
+            const editor = monacoRef?.editor?.getEditors?.()?.[0];
+            const models = monacoRef?.editor?.getModels?.() || [];
+            const targetModel = models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri);
+            if (editor && targetModel) {
+              editor.setModel(targetModel);
             }
-          }
-        }, { lineNumber: probeSetup?.healthLine ?? 1, modelUri: probeSetup?.modelUri ?? "" });
+            if (editor && lineNumber > 0) {
+              editor.revealLineInCenter(lineNumber);
+              editor.setPosition({ lineNumber, column: 12 });
+              editor.focus();
+              const showHover = editor.getAction("editor.action.showHover");
+              if (showHover) {
+                await showHover.run();
+              }
+            }
+          },
+          { lineNumber: probeSetup?.healthLine ?? 1, modelUri: probeSetup?.modelUri ?? "" }
+        );
         await page.waitForTimeout(900);
 
         const hoverWidget = page.locator(".monaco-hover").first();
@@ -839,91 +858,92 @@ test.describe("Professional Editor Tests", () => {
         expect(jsonProviderProbe.inlayHints).toBeGreaterThan(0);
 
         // Invoke quick-fix to prove JSON code actions are available.
-        await page.evaluate(async ({ lineNumber, modelUri }) => {
-          const monacoRef = (window as any).monaco;
-          const editor = monacoRef?.editor?.getEditors?.()?.[0];
-          const models = monacoRef?.editor?.getModels?.() || [];
-          const targetModel = models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri);
-          if (editor && targetModel) {
-            editor.setModel(targetModel);
-          }
-          if (editor && lineNumber > 0) {
-            editor.revealLineInCenter(lineNumber);
-            editor.setPosition({ lineNumber, column: 12 });
-            editor.focus();
-            const quickFix = editor.getAction("editor.action.quickFix");
-            if (quickFix) {
-              await quickFix.run();
+        await page.evaluate(
+          async ({ lineNumber, modelUri }) => {
+            const monacoRef = (window as any).monaco;
+            const editor = monacoRef?.editor?.getEditors?.()?.[0];
+            const models = monacoRef?.editor?.getModels?.() || [];
+            const targetModel = models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri);
+            if (editor && targetModel) {
+              editor.setModel(targetModel);
             }
-          }
-        }, { lineNumber: probeSetup?.healthLine ?? 1, modelUri: probeSetup?.modelUri ?? "" });
+            if (editor && lineNumber > 0) {
+              editor.revealLineInCenter(lineNumber);
+              editor.setPosition({ lineNumber, column: 12 });
+              editor.focus();
+              const quickFix = editor.getAction("editor.action.quickFix");
+              if (quickFix) {
+                await quickFix.run();
+              }
+            }
+          },
+          { lineNumber: probeSetup?.healthLine ?? 1, modelUri: probeSetup?.modelUri ?? "" }
+        );
         await page.waitForTimeout(900);
-        const quickInputVisible = await page.locator(".quick-input-widget").isVisible({ timeout: 1200 }).catch(() => false);
-        const actionWidgetVisible = await page
-          .locator(".action-widget, .context-view .monaco-menu-container")
-          .first()
-          .isVisible({ timeout: 1200 })
-          .catch(() => false);
+
         await takeScreenshot(page, "pro-json-ide-code-actions");
         console.log(`JSON code actions provider=${jsonProviderProbe.codeActions}`);
         expect(jsonProviderProbe.codeActions).toBeGreaterThan(0);
         await page.keyboard.press("Escape");
 
         // Go-to-definition on component group references inside events.
-        const definitionProbe = await page.evaluate(async ({ usageLine }) => {
-          const monacoRef = (window as any).monaco;
-          const editor = monacoRef?.editor?.getEditors?.()?.[0];
-          let model = editor?.getModel?.();
-          const models = monacoRef?.editor?.getModels?.() || [];
-          const preferredModel =
-            models.find((candidate: any) => {
-              const uri = candidate?.uri?.toString?.().toLowerCase?.() || "";
-              const language = candidate?.getLanguageId?.()?.toLowerCase?.() || "";
-              return language === "json" && uri.startsWith("file://");
-            }) || model;
-          if (editor && preferredModel) {
-            editor.setModel(preferredModel);
-            model = preferredModel;
-          }
-          const enhancements = (window as any).__mctJsonEnhancements;
-          if (!editor || !model || !enhancements || usageLine <= 0) {
-            return { definitionCount: 0, firstDefinitionLine: -1 };
-          }
+        const definitionProbe = await page.evaluate(
+          async ({ usageLine }) => {
+            const monacoRef = (window as any).monaco;
+            const editor = monacoRef?.editor?.getEditors?.()?.[0];
+            let model = editor?.getModel?.();
+            const models = monacoRef?.editor?.getModels?.() || [];
+            const preferredModel =
+              models.find((candidate: any) => {
+                const uri = candidate?.uri?.toString?.().toLowerCase?.() || "";
+                const language = candidate?.getLanguageId?.()?.toLowerCase?.() || "";
+                return language === "json" && uri.startsWith("file://");
+              }) || model;
+            if (editor && preferredModel) {
+              editor.setModel(preferredModel);
+              model = preferredModel;
+            }
+            const enhancements = (window as any).__mctJsonEnhancements;
+            if (!editor || !model || !enhancements || usageLine <= 0) {
+              return { definitionCount: 0, firstDefinitionLine: -1 };
+            }
 
-          const usageText = model.getLineContent(usageLine);
-          const usageIndex = usageText.indexOf("demo_group");
-          const column = usageIndex >= 0 ? usageIndex + 2 : 1;
-          editor.revealLineInCenter(usageLine);
-          editor.setPosition({ lineNumber: usageLine, column });
-          editor.focus();
+            const usageText = model.getLineContent(usageLine);
+            const usageIndex = usageText.indexOf("demo_group");
+            const column = usageIndex >= 0 ? usageIndex + 2 : 1;
+            editor.revealLineInCenter(usageLine);
+            editor.setPosition({ lineNumber: usageLine, column });
+            editor.focus();
 
-          const token = { isCancellationRequested: false } as any;
-          const referenceProvider = enhancements.referenceProvider;
-          const position = new monacoRef.Position(usageLine, column);
-          const definitionResult = referenceProvider?.provideDefinition
-            ? await referenceProvider.provideDefinition(model, position, token)
-            : null;
+            const token = { isCancellationRequested: false } as any;
+            const referenceProvider = enhancements.referenceProvider;
+            const position = new monacoRef.Position(usageLine, column);
+            const definitionResult = referenceProvider?.provideDefinition
+              ? await referenceProvider.provideDefinition(model, position, token)
+              : null;
 
-          const fallbackDefinition = referenceProvider?.resolveSectionDefinition
-            ? referenceProvider.resolveSectionDefinition(model, "demo_group", "component_groups")
-            : null;
+            const fallbackDefinition = referenceProvider?.resolveSectionDefinition
+              ? referenceProvider.resolveSectionDefinition(model, "demo_group", "component_groups")
+              : null;
 
-          const definitionList = Array.isArray(definitionResult)
-            ? definitionResult
-            : definitionResult
-              ? [definitionResult]
-              : [];
-          if (definitionList.length === 0 && fallbackDefinition) {
-            definitionList.push(fallbackDefinition);
-          }
-          const firstDefinitionLine =
-            definitionList.length > 0 && definitionList[0].range ? definitionList[0].range.startLineNumber : -1;
+            const definitionList = Array.isArray(definitionResult)
+              ? definitionResult
+              : definitionResult
+                ? [definitionResult]
+                : [];
+            if (definitionList.length === 0 && fallbackDefinition) {
+              definitionList.push(fallbackDefinition);
+            }
+            const firstDefinitionLine =
+              definitionList.length > 0 && definitionList[0].range ? definitionList[0].range.startLineNumber : -1;
 
-          return {
-            definitionCount: definitionList.length,
-            firstDefinitionLine,
-          };
-        }, { usageLine: probeSetup?.usageLine ?? -1 });
+            return {
+              definitionCount: definitionList.length,
+              firstDefinitionLine,
+            };
+          },
+          { usageLine: probeSetup?.usageLine ?? -1 }
+        );
 
         console.log(
           `JSON component-group go-to-definition provider count=${definitionProbe.definitionCount} firstLine=${definitionProbe.firstDefinitionLine}`
@@ -964,7 +984,8 @@ test.describe("Professional Editor Tests", () => {
 
       // In form mode, the manifest should show a structured editor, not just Monaco
       const pageContent = await page.content();
-      const hasFormElements = pageContent.includes("form") || pageContent.includes("input") || pageContent.includes("pie-");
+      const hasFormElements =
+        pageContent.includes("form") || pageContent.includes("input") || pageContent.includes("pie-");
       console.log(`Form elements present: ${hasFormElements}`);
     });
   });
@@ -976,7 +997,9 @@ test.describe("Professional Editor Tests", () => {
       // Create a Code Starter project (the Add-On Starter may not have TS files)
       const entered = await enterEditorWithTemplate(page, "Code Starter (TypeScript)");
       if (!entered) {
-        console.log("TypeScript test: Failed to create Code Starter (TypeScript) project, closing dialogs and continuing");
+        console.log(
+          "TypeScript test: Failed to create Code Starter (TypeScript) project, closing dialogs and continuing"
+        );
         // Close any dialogs that may have opened during the failed template attempt
         await closeDialogs(page);
         await page.waitForTimeout(1000);
@@ -1000,7 +1023,8 @@ test.describe("Professional Editor Tests", () => {
       // Dump first 15 item labels for debugging
       const labelSample: string[] = [];
       for (let i = 0; i < Math.min(optionCount, 15); i++) {
-        const label = (await allOptions.nth(i).getAttribute("aria-label")) || (await allOptions.nth(i).textContent()) || "";
+        const label =
+          (await allOptions.nth(i).getAttribute("aria-label")) || (await allOptions.nth(i).textContent()) || "";
         labelSample.push(label.trim().substring(0, 50));
       }
       console.log(`TypeScript test: sidebar labels: ${JSON.stringify(labelSample)}`);
@@ -1256,13 +1280,19 @@ test.describe("Professional Editor Tests", () => {
       // IntelliSense (Ctrl+Space)
       await page.keyboard.press(`${modifier}+Space`);
       await page.waitForTimeout(400);
-      let suggestVisible = await page.locator(".monaco-editor .suggest-widget").isVisible({ timeout: 1200 }).catch(() => false);
+      let suggestVisible = await page
+        .locator(".monaco-editor .suggest-widget")
+        .isVisible({ timeout: 1200 })
+        .catch(() => false);
       if (!suggestVisible) {
         await page.keyboard.type(".");
         await page.waitForTimeout(200);
         await page.keyboard.press(`${modifier}+Space`);
         await page.waitForTimeout(400);
-        suggestVisible = await page.locator(".monaco-editor .suggest-widget").isVisible({ timeout: 1200 }).catch(() => false);
+        suggestVisible = await page
+          .locator(".monaco-editor .suggest-widget")
+          .isVisible({ timeout: 1200 })
+          .catch(() => false);
       }
       console.log(`IntelliSense widget visible: ${suggestVisible}`);
       await takeScreenshot(page, "pro-ts-intellisense");
@@ -1330,10 +1360,26 @@ test.describe("Professional Editor Tests", () => {
         return;
       }
 
-      const hasCloseAll = await page.getByText("Ctrl+Shift+W").first().isVisible({ timeout: 1000 }).catch(() => false);
-      const hasGoToLine = await page.getByText("Ctrl+G").first().isVisible({ timeout: 1000 }).catch(() => false);
-      const hasToggleComment = await page.getByText("Ctrl+/").first().isVisible({ timeout: 1000 }).catch(() => false);
-      const hasMultiCursor = await page.getByText("Ctrl+D").first().isVisible({ timeout: 1000 }).catch(() => false);
+      const hasCloseAll = await page
+        .getByText("Ctrl+Shift+W")
+        .first()
+        .isVisible({ timeout: 1000 })
+        .catch(() => false);
+      const hasGoToLine = await page
+        .getByText("Ctrl+G")
+        .first()
+        .isVisible({ timeout: 1000 })
+        .catch(() => false);
+      const hasToggleComment = await page
+        .getByText("Ctrl+/")
+        .first()
+        .isVisible({ timeout: 1000 })
+        .catch(() => false);
+      const hasMultiCursor = await page
+        .getByText("Ctrl+D")
+        .first()
+        .isVisible({ timeout: 1000 })
+        .catch(() => false);
 
       console.log(
         `Shortcut help coverage closeAll=${hasCloseAll} goToLine=${hasGoToLine} toggleComment=${hasToggleComment} multiCursor=${hasMultiCursor}`
@@ -1378,7 +1424,10 @@ test.describe("Professional Editor Tests", () => {
 
       // Check for scrollbar
       const scrollbar = page.locator(".monaco-editor .scrollbar");
-      const scrollbarVisible = await scrollbar.first().isVisible({ timeout: 2000 }).catch(() => false);
+      const scrollbarVisible = await scrollbar
+        .first()
+        .isVisible({ timeout: 2000 })
+        .catch(() => false);
       console.log(`Scrollbar visible: ${scrollbarVisible}`);
 
       // Check for minimap
@@ -1476,8 +1525,10 @@ test.describe("Professional Editor Tests", () => {
 
           const lines = model.getValue().split("\n");
           const mathLine = lines.findIndex((line: string) => line.includes("Math.abs")) + 1;
-          const usageLine = lines.findIndex((line: string) => line.includes("const checked = proMonacoFeatureProbe")) + 1;
-          const definitionLine = lines.findIndex((line: string) => line.includes("function proMonacoFeatureProbe(")) + 1;
+          const usageLine =
+            lines.findIndex((line: string) => line.includes("const checked = proMonacoFeatureProbe")) + 1;
+          const definitionLine =
+            lines.findIndex((line: string) => line.includes("function proMonacoFeatureProbe(")) + 1;
 
           if (editor && mathLine > 0) {
             editor.revealLineInCenter(mathLine);
@@ -1529,7 +1580,11 @@ test.describe("Professional Editor Tests", () => {
           await mathLine.hover();
           await page.waitForTimeout(1200);
 
-          hoverVisible = await page.locator(".monaco-hover").first().isVisible({ timeout: 1500 }).catch(() => false);
+          hoverVisible = await page
+            .locator(".monaco-hover")
+            .first()
+            .isVisible({ timeout: 1500 })
+            .catch(() => false);
           if (!hoverVisible) {
             await mathLine.click();
             await page.waitForTimeout(120);
@@ -1537,33 +1592,50 @@ test.describe("Professional Editor Tests", () => {
             await page.waitForTimeout(120);
             await page.keyboard.press(`${modifier}+i`);
             await page.waitForTimeout(1000);
-            hoverVisible = await page.locator(".monaco-hover").first().isVisible({ timeout: 1500 }).catch(() => false);
+            hoverVisible = await page
+              .locator(".monaco-hover")
+              .first()
+              .isVisible({ timeout: 1500 })
+              .catch(() => false);
           }
         } else {
-          await page.evaluate(async ({ mathLine, modelUri }) => {
-            const monacoRef = (window as any).monaco;
-            const editor = monacoRef?.editor?.getEditors?.()?.[0];
-            const models = monacoRef?.editor?.getModels?.() || [];
-            const targetModel = models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri);
-            if (editor && targetModel) {
-              editor.setModel(targetModel);
-            }
-            if (editor && mathLine > 0) {
-              editor.revealLineInCenter(mathLine);
-              editor.setPosition({ lineNumber: mathLine, column: 10 });
-              editor.focus();
-              const showHover = editor.getAction("editor.action.showHover");
-              if (showHover) {
-                await showHover.run();
+          await page.evaluate(
+            async ({ mathLine, modelUri }) => {
+              const monacoRef = (window as any).monaco;
+              const editor = monacoRef?.editor?.getEditors?.()?.[0];
+              const models = monacoRef?.editor?.getModels?.() || [];
+              const targetModel = models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri);
+              if (editor && targetModel) {
+                editor.setModel(targetModel);
               }
-            }
-          }, { mathLine: probeSetup?.mathLine ?? -1, modelUri: probeSetup?.modelUri ?? "" });
+              if (editor && mathLine > 0) {
+                editor.revealLineInCenter(mathLine);
+                editor.setPosition({ lineNumber: mathLine, column: 10 });
+                editor.focus();
+                const showHover = editor.getAction("editor.action.showHover");
+                if (showHover) {
+                  await showHover.run();
+                }
+              }
+            },
+            { mathLine: probeSetup?.mathLine ?? -1, modelUri: probeSetup?.modelUri ?? "" }
+          );
           await page.waitForTimeout(900);
-          hoverVisible = await page.locator(".monaco-hover").first().isVisible({ timeout: 1500 }).catch(() => false);
+          hoverVisible = await page
+            .locator(".monaco-hover")
+            .first()
+            .isVisible({ timeout: 1500 })
+            .catch(() => false);
         }
 
         const hoverText = hoverVisible
-          ? ((await page.locator(".monaco-hover").first().textContent().catch(() => "")) || "").trim()
+          ? (
+              (await page
+                .locator(".monaco-hover")
+                .first()
+                .textContent()
+                .catch(() => "")) || ""
+            ).trim()
           : "";
         const hoverEvidenceAvailable = hoverVisible && hoverText.length > 0;
         await takeScreenshot(page, "pro-ts-ide-hover-docs");
@@ -1576,73 +1648,80 @@ test.describe("Professional Editor Tests", () => {
         await page.waitForTimeout(200);
 
         // Go-to-definition navigation (same-file or cross-file, depending on provider support)
-        const definitionProbeSetup = await page.evaluate(async ({ modelUri, usageLine, definitionLine }) => {
-          const monacoRef = (window as any).monaco;
-          const editor = monacoRef?.editor?.getEditors?.()?.[0];
-          const models = monacoRef?.editor?.getModels?.() || [];
-          const targetModel = models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri);
-          if (editor && targetModel) {
-            editor.setModel(targetModel);
-          }
-          const model = editor?.getModel?.();
+        const definitionProbeSetup = await page.evaluate(
+          async ({ modelUri, usageLine, definitionLine }) => {
+            const monacoRef = (window as any).monaco;
+            const editor = monacoRef?.editor?.getEditors?.()?.[0];
+            const models = monacoRef?.editor?.getModels?.() || [];
+            const targetModel = models.find((candidate: any) => candidate?.uri?.toString?.() === modelUri);
+            if (editor && targetModel) {
+              editor.setModel(targetModel);
+            }
+            const model = editor?.getModel?.();
 
-          if (!editor || !model) {
-            return { ready: false, expectedDefinitionLine: -1, providerDefinitions: 0 };
-          }
+            if (!editor || !model) {
+              return { ready: false, expectedDefinitionLine: -1, providerDefinitions: 0 };
+            }
 
-          let computedUsageLine = usageLine ?? -1;
-          let usageColumn = -1;
-          let computedDefinitionLine = definitionLine ?? -1;
+            let computedUsageLine = usageLine ?? -1;
+            let usageColumn = -1;
+            let computedDefinitionLine = definitionLine ?? -1;
 
-          for (let line = 1; line <= model.getLineCount() && (computedUsageLine < 0 || computedDefinitionLine < 0); line++) {
-            const content = model.getLineContent(line);
+            for (
+              let line = 1;
+              line <= model.getLineCount() && (computedUsageLine < 0 || computedDefinitionLine < 0);
+              line++
+            ) {
+              const content = model.getLineContent(line);
 
-            if (computedDefinitionLine < 0 && content.includes("function proMonacoFeatureProbe(")) {
-              computedDefinitionLine = line;
+              if (computedDefinitionLine < 0 && content.includes("function proMonacoFeatureProbe(")) {
+                computedDefinitionLine = line;
+              }
+
+              if (computedUsageLine < 0) {
+                const usageIndex = content.indexOf("proMonacoFeatureProbe(");
+                if (usageIndex >= 0 && content.includes("const checked")) {
+                  computedUsageLine = line;
+                  usageColumn = usageIndex + 1;
+                }
+              }
             }
 
             if (computedUsageLine < 0) {
-              const usageIndex = content.indexOf("proMonacoFeatureProbe(");
-              if (usageIndex >= 0 && content.includes("const checked")) {
-                computedUsageLine = line;
-                usageColumn = usageIndex + 1;
+              return { ready: false, expectedDefinitionLine: computedDefinitionLine, providerDefinitions: 0 };
+            }
+
+            editor.revealLineInCenter(computedUsageLine);
+            const probeColumn = usageColumn > 0 ? usageColumn : 1;
+            editor.setPosition({ lineNumber: computedUsageLine, column: probeColumn });
+            editor.focus();
+
+            let providerDefinitions = 0;
+            try {
+              const languageId = model.getLanguageId?.()?.toLowerCase?.() || "";
+              const getWorkerFactory =
+                languageId === "javascript"
+                  ? monacoRef?.languages?.typescript?.getJavaScriptWorker
+                  : monacoRef?.languages?.typescript?.getTypeScriptWorker;
+              if (typeof getWorkerFactory === "function") {
+                const getWorker = await getWorkerFactory();
+                const workerClient = await getWorker(model.uri);
+                const offset = model.getOffsetAt({ lineNumber: computedUsageLine, column: probeColumn });
+                const definitions = await workerClient.getDefinitionAtPosition(model.uri.toString(), offset);
+                providerDefinitions = Array.isArray(definitions) ? definitions.length : 0;
               }
+            } catch {
+              providerDefinitions = 0;
             }
+
+            return { ready: true, expectedDefinitionLine: computedDefinitionLine, providerDefinitions };
+          },
+          {
+            modelUri: probeSetup?.modelUri ?? "",
+            usageLine: probeSetup?.usageLine ?? -1,
+            definitionLine: probeSetup?.definitionLine ?? -1,
           }
-
-          if (computedUsageLine < 0) {
-            return { ready: false, expectedDefinitionLine: computedDefinitionLine, providerDefinitions: 0 };
-          }
-
-          editor.revealLineInCenter(computedUsageLine);
-          const probeColumn = usageColumn > 0 ? usageColumn : 1;
-          editor.setPosition({ lineNumber: computedUsageLine, column: probeColumn });
-          editor.focus();
-
-          let providerDefinitions = 0;
-          try {
-            const languageId = model.getLanguageId?.()?.toLowerCase?.() || "";
-            const getWorkerFactory =
-              languageId === "javascript"
-                ? monacoRef?.languages?.typescript?.getJavaScriptWorker
-                : monacoRef?.languages?.typescript?.getTypeScriptWorker;
-            if (typeof getWorkerFactory === "function") {
-              const getWorker = await getWorkerFactory();
-              const workerClient = await getWorker(model.uri);
-              const offset = model.getOffsetAt({ lineNumber: computedUsageLine, column: probeColumn });
-              const definitions = await workerClient.getDefinitionAtPosition(model.uri.toString(), offset);
-              providerDefinitions = Array.isArray(definitions) ? definitions.length : 0;
-            }
-          } catch {
-            providerDefinitions = 0;
-          }
-
-          return { ready: true, expectedDefinitionLine: computedDefinitionLine, providerDefinitions };
-        }, {
-          modelUri: probeSetup?.modelUri ?? "",
-          usageLine: probeSetup?.usageLine ?? -1,
-          definitionLine: probeSetup?.definitionLine ?? -1,
-        });
+        );
 
         await page.keyboard.press("F12");
         await page.waitForTimeout(1200);
@@ -1851,8 +1930,9 @@ test.describe("Professional Editor Tests", () => {
           const monacoRef = (window as any).monaco;
           const models = monacoRef?.editor?.getModels?.() || [];
           const manifestModel =
-            models.find((candidate: any) => (candidate?.uri?.toString?.().toLowerCase?.() || "").includes("manifest")) ||
-            models.find((candidate: any) => (candidate?.getLanguageId?.()?.toLowerCase?.() || "") === "json");
+            models.find((candidate: any) =>
+              (candidate?.uri?.toString?.().toLowerCase?.() || "").includes("manifest")
+            ) || models.find((candidate: any) => (candidate?.getLanguageId?.()?.toLowerCase?.() || "") === "json");
 
           if (!manifestModel) {
             return { applied: false };
@@ -1902,7 +1982,11 @@ test.describe("Professional Editor Tests", () => {
         let inspectorVisible = false;
         for (let i = 0; i < 3; i++) {
           await page.waitForTimeout(2200);
-          inspectorVisible = await page.locator(".pid-outer").first().isVisible({ timeout: 1500 }).catch(() => false);
+          inspectorVisible = await page
+            .locator(".pid-outer")
+            .first()
+            .isVisible({ timeout: 1500 })
+            .catch(() => false);
           if (inspectorVisible) {
             break;
           }
@@ -1950,7 +2034,11 @@ test.describe("Professional Editor Tests", () => {
           }
           await page.waitForTimeout(1500);
 
-          const navigatedToEditor = await page.locator(".monaco-editor").first().isVisible({ timeout: 2000 }).catch(() => false);
+          const navigatedToEditor = await page
+            .locator(".monaco-editor")
+            .first()
+            .isVisible({ timeout: 2000 })
+            .catch(() => false);
           console.log(`Inspector click-to-navigate available: ${navigatedToEditor}`);
 
           if (navigatedToEditor) {
@@ -1965,7 +2053,9 @@ test.describe("Professional Editor Tests", () => {
             expect(stillOnInspector).toBe(true);
           }
         } else {
-          console.log("No clickable row for this deterministic issue in this run; baseline click-to-source is covered separately.");
+          console.log(
+            "No clickable row for this deterministic issue in this run; baseline click-to-source is covered separately."
+          );
           await takeScreenshot(page, "pro-inspector-invalid-reviewed");
         }
       } finally {
@@ -2220,7 +2310,10 @@ test.describe("Professional Editor Tests", () => {
       }
       await page.waitForTimeout(700);
       await takeScreenshot(page, "pro-quick-open-opened-file");
-      const dialogStillOpen = await page.locator('[aria-label="Search project items"] input').isVisible().catch(() => false);
+      const dialogStillOpen = await page
+        .locator('[aria-label="Search project items"] input')
+        .isVisible()
+        .catch(() => false);
       console.log(`Quick open dialog still visible after selection: ${dialogStillOpen}`);
       expect(dialogStillOpen).toBe(false);
     });
@@ -2261,7 +2354,11 @@ test.describe("Professional Editor Tests", () => {
       await page.keyboard.press(`${modifier}+Shift+w`);
       await page.waitForTimeout(700);
 
-      const projectSettingsVisible = await page.getByLabel("Minor version number").first().isVisible().catch(() => false);
+      const projectSettingsVisible = await page
+        .getByLabel("Minor version number")
+        .first()
+        .isVisible()
+        .catch(() => false);
       console.log(`Project settings visible after close-all shortcut: ${projectSettingsVisible}`);
       await takeScreenshot(page, "pro-tabs-after-close-all");
       expect(projectSettingsVisible).toBe(true);

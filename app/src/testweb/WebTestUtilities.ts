@@ -267,7 +267,7 @@ export async function gotoWithTheme(page: Page, mode: ThemeMode, path: string = 
   // resources (scripts, images, styles) to finish and is reliable for
   // both Vite dev and production builds.
   await page.goto(url, { waitUntil: "load" });
-  await page.waitForTimeout(500);
+  await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
 }
 
 export async function preferBrowserStorageInProjectDialog(page: Page): Promise<void> {
@@ -276,7 +276,6 @@ export async function preferBrowserStorageInProjectDialog(page: Page): Promise<v
   if (await browserStorageRadio.isVisible({ timeout: 1500 }).catch(() => false)) {
     await browserStorageRadio.scrollIntoViewIfNeeded().catch(() => {});
     await browserStorageRadio.check({ force: true });
-    await page.waitForTimeout(250);
     console.log("preferBrowserStorageInProjectDialog: Selected Browser Storage for automated test flow");
   }
 }
@@ -318,7 +317,6 @@ export async function clickTemplateCreateButton(page: Page, templateId: string):
     const seeMore = page.locator('text="See more templates"').first();
     if (await seeMore.isVisible({ timeout: 1500 }).catch(() => false)) {
       await seeMore.click();
-      await page.waitForTimeout(500);
     }
   }
 
@@ -354,7 +352,7 @@ export async function fillRequiredProjectDialogFields(page: Page, values?: { cre
     const byLabel = page.getByLabel(/^Creator Name/i).first();
     if (await byLabel.isVisible({ timeout: 1000 }).catch(() => false)) {
       await byLabel.fill(creator);
-      await page.waitForTimeout(150);
+      await expect(byLabel).toHaveValue(creator);
       console.log(`fillRequiredProjectDialogFields: Set Creator (by label) = "${creator}"`);
       return;
     }
@@ -364,7 +362,7 @@ export async function fillRequiredProjectDialogFields(page: Page, values?: { cre
   const current = (await creatorInput.inputValue().catch(() => "")) || "";
   if (!current.trim()) {
     await creatorInput.fill(creator);
-    await page.waitForTimeout(150);
+    await expect(creatorInput).toHaveValue(creator);
     console.log(`fillRequiredProjectDialogFields: Set Creator = "${creator}"`);
   } else {
     console.log(`fillRequiredProjectDialogFields: Creator already filled with "${current}"`);
@@ -398,39 +396,23 @@ export async function isViteDevServer(page: Page): Promise<boolean> {
 }
 
 export async function waitForEditorReady(page: Page, timeoutMs: number = 15000): Promise<boolean> {
-  const started = Date.now();
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  const editorToolbar = page
+    .locator('[aria-label="Project Editor main toolbar"]:visible, .pe-toolbar:visible, .pe-toolbar-compact:visible')
+    .first();
+  const editorSurface = page
+    .locator(
+      '[aria-label="Project Editor main content"]:visible, [aria-label="Project Editor item listing"]:visible, .pe-colAll:visible, .pe-col1and2:visible, .pe-col3and4:visible, .pe-col4:visible'
+    )
+    .first();
 
-  while (Date.now() - started < timeoutMs) {
-    const indicators = [
-      page.locator('[aria-label="Project Editor main toolbar"]').first(),
-      page.locator(".pe-toolbar, .pe-toolbar-compact").first(),
-      page.getByRole("button", { name: "Save" }).first(),
-      page.getByRole("button", { name: "View" }).first(),
-      getExportToolbarButton(page),
-      getTestToolbarButton(page),
-      page
-        .locator("h2")
-        .filter({ hasText: /Getting Started|Export Project|Test in Minecraft/i })
-        .first(),
-      page
-        .locator("button, .pact-cardTitle")
-        .filter({
-          hasText:
-            /Download .*Minecraft \(\.mcaddon\)|Save project files to a folder|flat test world|regular project world/i,
-        })
-        .first(),
-    ];
-
-    for (const indicator of indicators) {
-      if (await indicator.isVisible({ timeout: 750 }).catch(() => false)) {
-        return true;
-      }
-    }
-
-    await page.waitForTimeout(250);
+  try {
+    await editorToolbar.waitFor({ state: "visible", timeout: Math.max(0, deadline - Date.now()) });
+    await editorSurface.waitFor({ state: "visible", timeout: Math.max(0, deadline - Date.now()) });
+    return true;
+  } catch {
+    return false;
   }
-
-  return false;
 }
 
 /**
@@ -502,6 +484,9 @@ export async function enterEditor(
   page: Page,
   themeModeOrOptions?: ThemeMode | { theme?: ThemeMode; editMode?: EditModePreference }
 ): Promise<boolean> {
+  const newProjectButtonTimeoutMs = 30000;
+  const editorReadyTimeoutMs = 45000;
+
   // Normalize arguments: support both old signature (themeMode) and new options object
   let themeMode: ThemeMode | undefined;
   let editMode: EditModePreference = "focused";
@@ -521,22 +506,29 @@ export async function enterEditor(
       // Use "load" instead of "networkidle". Vite's HMR WebSocket keeps the
       // network perpetually busy in dev mode, so networkidle never fires.
       await page.goto("/", { waitUntil: "load" });
-      await page.waitForTimeout(1000);
+      await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
     }
 
     // Click "New" button under a project template (first one is usually Add-On Starter)
     const newButton = page.getByRole("button", { name: "Create New" }).first();
 
     try {
-      await expect(newButton).toBeVisible({ timeout: 10000 });
+      await expect(newButton).toBeVisible({ timeout: newProjectButtonTimeoutMs });
     } catch {
-      console.log("enterEditor: Could not find 'New' button on home page");
+      console.log(`enterEditor: Could not find 'New' button on home page after ${newProjectButtonTimeoutMs}ms`);
       return false;
     }
 
     console.log("enterEditor: Clicking 'New' button to create project");
     await newButton.click();
-    await page.waitForTimeout(1000);
+
+    const projectDialog = page.locator("dialog").or(page.locator('[role="dialog"]')).first();
+    try {
+      await expect(projectDialog).toBeVisible({ timeout: newProjectButtonTimeoutMs });
+    } catch {
+      console.log(`enterEditor: Project creation dialog did not become visible after ${newProjectButtonTimeoutMs}ms`);
+      return false;
+    }
 
     // Look for and click the "Create Project" button on the project creation dialog
     // The button has data-testid="submit-button" and text "Create Project"
@@ -561,24 +553,24 @@ export async function enterEditor(
       }
     }
 
-    // Wait for editor to load. Use polling rather than a fixed timeout so this
+    // Wait for editor to load using polling rather than a fixed timeout so this
     // works reliably against both a local Vite dev server and a remote
     // production site where network latency is unpredictable.
-    // First wait a minimum amount of time for the page to begin transitioning,
-    // then poll for the editor toolbar to appear.
     // Do NOT use waitForLoadState("networkidle") here — Vite's HMR WebSocket
     // keeps the network perpetually busy and the wait would never fire.
-    await page.waitForTimeout(3000);
-
-    // Poll for early editor readiness (up to 20s more) before proceeding to
-    // mode selection. This replaces the previous fixed 9s wait.
-    const earlyReady = await waitForEditorReady(page, 20000);
+    if (!(await waitForEditorReady(page, editorReadyTimeoutMs))) {
+      console.log(`enterEditor: Editor toolbar did not become ready after ${editorReadyTimeoutMs}ms`);
+      return false;
+    }
 
     // Now that the editor is loaded, the FRE panel should be visible.
     // Select the desired editing mode (Focused/Full/Raw) before verifying UI.
-    await selectEditMode(page, editMode);
+    if (!(await selectEditMode(page, editMode))) {
+      console.log(`enterEditor: Could not select ${editMode} editing mode`);
+      return false;
+    }
 
-    if (await waitForEditorReady(page, 15000)) {
+    if (await waitForEditorReady(page, editorReadyTimeoutMs)) {
       console.log("enterEditor: Successfully entered editor interface");
       return true;
     }
@@ -637,18 +629,28 @@ export async function selectEditMode(page: Page, mode: EditModePreference = "foc
   try {
     // Map mode to the button label text
     const modeLabel = mode === "focused" ? "Focused" : mode === "full" ? "Full" : "Raw";
+    const modeText = new RegExp(`${modeLabel}\\s+Mode`, "i");
+    const viewButton = page.getByRole("button", { name: /view/i }).first();
 
     // First close any open menus by pressing Escape
     await page.keyboard.press("Escape");
-    await page.waitForTimeout(200);
+
+    // The mode label is nested inside the View toolbar button, whose accessible
+    // name remains "View". Treat the requested mode as already selected when
+    // that nested label is present.
+    if (
+      (await viewButton.isVisible({ timeout: 2000 }).catch(() => false)) &&
+      (await viewButton.textContent())?.match(modeText)
+    ) {
+      return true;
+    }
 
     // Use specific FRE panel button selector for reliable clicks
     const modeButton = page.locator(`button.frp-option:has-text("${modeLabel}")`).first();
     if (await modeButton.isVisible({ timeout: 2000 })) {
       await modeButton.click();
       console.log(`selectEditMode: Selected ${modeLabel} mode`);
-      // Wait for preference change to propagate through React re-render cycle
-      await page.waitForTimeout(1000);
+      await expect(modeButton).toHaveAttribute("aria-pressed", "true", { timeout: 5000 });
 
       // Dismiss the panel via close button
       const closeButton = page
@@ -657,34 +659,28 @@ export async function selectEditMode(page: Page, mode: EditModePreference = "foc
       if (await closeButton.isVisible({ timeout: 1000 }).catch(() => false)) {
         await closeButton.click();
         console.log("selectEditMode: Dismissed welcome panel");
-        await page.waitForTimeout(500);
       }
 
       // Close any lingering menus
       await page.keyboard.press("Escape");
-      await page.waitForTimeout(200);
       return true;
     }
 
     // Fallback: use View menu to switch mode (works when FRE panel is not shown)
-    const viewButton = page.getByRole("button", { name: /view/i }).first();
     if (await viewButton.isVisible({ timeout: 2000 }).catch(() => false)) {
       await viewButton.click();
-      await page.waitForTimeout(500);
 
-      const modeMenuItem = page.locator(`text="${modeLabel} Mode"`).first();
+      const modeMenuItem = page.getByRole("menuitem").filter({ hasText: modeText }).first();
       if (await modeMenuItem.isVisible({ timeout: 2000 }).catch(() => false)) {
         await modeMenuItem.click();
         console.log(`selectEditMode: Selected ${modeLabel} mode via View menu`);
-        await page.waitForTimeout(1000);
+        await expect(viewButton).toContainText(modeText, { timeout: 5000 });
         await page.keyboard.press("Escape");
-        await page.waitForTimeout(200);
         return true;
       }
 
       // Close the menu if the item wasn't found
       await page.keyboard.press("Escape");
-      await page.waitForTimeout(200);
     }
 
     // Fallback: try generic text selector (for backwards compatibility)
@@ -692,7 +688,6 @@ export async function selectEditMode(page: Page, mode: EditModePreference = "foc
     if (await modeButtonFallback.isVisible({ timeout: 1000 })) {
       await modeButtonFallback.click();
       console.log(`selectEditMode: Selected ${modeLabel} mode (fallback)`);
-      await page.waitForTimeout(1000);
 
       const closeButton = page
         .locator('[aria-label="Dismiss welcome panel"], [aria-label="Close"], button:has-text("×")')
@@ -700,11 +695,9 @@ export async function selectEditMode(page: Page, mode: EditModePreference = "foc
       if (await closeButton.isVisible({ timeout: 1000 }).catch(() => false)) {
         await closeButton.click();
         console.log("selectEditMode: Dismissed welcome panel");
-        await page.waitForTimeout(500);
       }
 
       await page.keyboard.press("Escape");
-      await page.waitForTimeout(200);
       return true;
     }
 
@@ -713,15 +706,14 @@ export async function selectEditMode(page: Page, mode: EditModePreference = "foc
     if (await dontShowCheckbox.isVisible({ timeout: 1000 })) {
       await dontShowCheckbox.click();
       console.log("selectEditMode: Dismissed via 'Don't show this again'");
-      await page.waitForTimeout(300);
       await page.keyboard.press("Escape");
-      await page.waitForTimeout(200);
       return true;
     }
 
     console.log("selectEditMode: No welcome panel found (may already be dismissed)");
     await page.keyboard.press("Escape");
-    return false;
+    const currentModeButton = page.getByRole("button", { name: new RegExp(`View:.*${modeLabel} Mode`, "i") }).first();
+    return await currentModeButton.isVisible({ timeout: 1000 }).catch(() => false);
   } catch {
     console.log("selectEditMode: Error while trying to select mode");
     return false;
@@ -774,7 +766,7 @@ export async function dismissWelcomeDialog(page: Page): Promise<boolean> {
 export async function enableAllFileTypes(page: Page): Promise<boolean> {
   try {
     // First, look for the "Show" button and click it to open the dropdown
-    const showButton = page.locator('button:has-text("Show")').first();
+    const showButton = page.locator(".pil-showMenu button").first();
 
     if (await showButton.isVisible({ timeout: 2000 })) {
       await showButton.click();
@@ -803,7 +795,6 @@ export async function enableAllFileTypes(page: Page): Promise<boolean> {
           // "All Single Files" only exists in Focused/Summarized mode — close menu gracefully
           await page.keyboard.press("Escape");
           console.log("enableAllFileTypes: 'All Single Files' not in menu (may be in Full mode where it's not needed)");
-          await page.waitForTimeout(300);
           return true;
         }
       }
@@ -815,7 +806,9 @@ export async function enableAllFileTypes(page: Page): Promise<boolean> {
         .catch(async () => {
           console.log("enableAllFileTypes: Menu did not auto-close, pressing Escape");
           await page.keyboard.press("Escape");
-          await page.waitForTimeout(500);
+          await expect(page.locator(".MuiPopover-root, .MuiModal-root"))
+            .toHaveCount(0, { timeout: 1000 })
+            .catch(() => {});
         });
 
       // Ensure no MUI backdrop remains
@@ -824,10 +817,11 @@ export async function enableAllFileTypes(page: Page): Promise<boolean> {
         .catch(async () => {
           console.log("enableAllFileTypes: MUI backdrop still present, pressing Escape");
           await page.keyboard.press("Escape");
-          await page.waitForTimeout(500);
+          await expect(page.locator(".MuiBackdrop-root"))
+            .toHaveCount(0, { timeout: 1000 })
+            .catch(() => {});
         });
 
-      await page.waitForTimeout(300);
       return true;
     }
 
@@ -837,7 +831,9 @@ export async function enableAllFileTypes(page: Page): Promise<boolean> {
     console.log(`enableAllFileTypes: Error - ${error}`);
     // Emergency cleanup: press Escape to close any open menus
     await page.keyboard.press("Escape").catch(() => {});
-    await page.waitForTimeout(300);
+    await expect(page.locator(".MuiPopover-root, .MuiModal-root, .MuiBackdrop-root"))
+      .toHaveCount(0, { timeout: 1000 })
+      .catch(() => {});
     return false;
   }
 }
@@ -872,11 +868,9 @@ export async function openFileInMonaco(page: Page, fileNameOrPattern: string): P
         if (await fileItem.isVisible({ timeout: 1500 })) {
           // Scroll element into view if needed
           await fileItem.scrollIntoViewIfNeeded();
-          await page.waitForTimeout(300);
 
           await fileItem.click();
           console.log(`openFileInMonaco: Clicked on file matching "${fileNameOrPattern}" (selector: ${selector})`);
-          await page.waitForTimeout(1500);
 
           // Verify Monaco editor appeared
           const monacoEditor = page.locator(".monaco-editor").first();
@@ -926,7 +920,6 @@ export async function switchToRawMode(page: Page): Promise<boolean> {
       if (await button.isVisible({ timeout: 2000 })) {
         await button.click();
         console.log("switchToRawMode: Clicked Raw/JSON tab");
-        await page.waitForTimeout(1000);
 
         // Verify Monaco editor appeared
         const monacoEditor = page.locator(".monaco-editor").first();
@@ -1006,7 +999,6 @@ export async function setupJsonEditor(
 
   // Step 3: Enable all file types
   await enableAllFileTypes(page);
-  await page.waitForTimeout(500);
 
   if (takeScreenshots) {
     await takeScreenshot(page, `${screenshotDir}/setup-files-visible`);

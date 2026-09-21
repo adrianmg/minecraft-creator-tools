@@ -5,11 +5,12 @@ import IFile from "../storage/IFile";
 import Log from "../core/Log";
 import { EventDispatcher, IEventHandler } from "ste-events";
 import { IVsCodeExtensions } from "./IVsCodeExtensions";
+import { MinecraftDebuggerExtensionId } from "./MinecraftDebuggerExtension";
 
 export const VsCodeRecommendations = [
   "esbenp.prettier-vscode",
   "blockceptionltd.blockceptionvscodeminecraftbedrockdevelopmentextension",
-  "mojang-studios.minecraft-debugger",
+  MinecraftDebuggerExtensionId,
 ];
 
 export default class VsCodeExtensionsDefinition {

@@ -1,13 +1,14 @@
 import { ProjectItemType } from "../../../app/IProjectItemData";
 import Project from "../../../app/Project";
+import IFile from "../../../storage/IFile";
 import IFolder from "../../../storage/IFolder";
 import { isWorldIcon, parseImageMetadata } from "../../../storage/ImageUtilites";
 import { InfoItemType } from "../../IInfoItemData";
 import IProjectInfoGenerator from "../../IProjectInfoGenerator";
 import ProjectInfoItem from "../../ProjectInfoItem";
-import { filterAsync } from "../../../core/async/AsyncUtilities";
 import Log from "../../../core/Log";
-import { CheckWorldIconsGeneratorTest } from "./CheckWorldIconsGeneratorData";
+import { CheckWorldIconsGeneratorTest, WorldIconValidationRules } from "./CheckWorldIconsGeneratorData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 const DefaultEduImageWidth = 480;
 const DefaultEduImageHeight = 270;
@@ -24,10 +25,12 @@ const DefaultBedrockImageHeight = 450;
  *
  * @see {@link ../../../public/data/forms/mctoolsval/cwi.form.json} for topic definitions
  */
-export default class CheckWorldIconsGenerator implements IProjectInfoGenerator {
+export default class CheckWorldIconsGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id: string = "CWI";
   title: string = "World Icons";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = WorldIconValidationRules;
 
   private severity = InfoItemType.error;
 
@@ -44,7 +47,10 @@ export default class CheckWorldIconsGenerator implements IProjectInfoGenerator {
           await projectItem.loadContent();
         }
 
-        const folder = projectItem.getFolder();
+        // World template manifests are single-file items, so getFolder() (which
+        // only tracks folder-storage items) is null for them; resolve the world
+        // folder from the manifest file's parent instead.
+        const folder = projectItem.getFolder() ?? projectItem.primaryFile?.parentFolder;
 
         if (folder) {
           worldFolders.push(folder);
@@ -63,7 +69,20 @@ export default class CheckWorldIconsGenerator implements IProjectInfoGenerator {
   }
 
   private async validateWorldIconForFolder(folder: IFolder, isEDUOffer: boolean) {
-    const files = await filterAsync(folder.allFiles, isWorldIcon);
+    // Minecraft only loads the thumbnail from /world_icon.jpeg at the world
+    // root, so icons nested inside embedded packs (e.g.
+    // resource_packs/*/world_icon.jpeg) neither satisfy nor conflict with this
+    // requirement; only consider the world root's direct files.
+    await folder.load();
+
+    const files: IFile[] = [];
+    for (const fileName in folder.files) {
+      const file = folder.files[fileName];
+
+      if (file && isWorldIcon(file)) {
+        files.push(file);
+      }
+    }
 
     if (files.length === 0) {
       const message = `No World Icon found for ${folder.getFolderRelativePath}.`;

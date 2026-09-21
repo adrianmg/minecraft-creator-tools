@@ -23,8 +23,19 @@
  *
  * 1. Client connects to Minecraft's debug port
  * 2. Minecraft sends ProtocolEvent with version and capabilities
- * 3. Client responds with protocol handshake
- * 4. Events flow continuously (StatEvent2 every tick, etc.)
+ * 3. Client responds with protocol handshake (negotiated = min(server, v10))
+ * 4. Events flow continuously (StatEvent2 every tick, SchemaEvent on v9+, etc.)
+ *
+ * ## Protocol Versions
+ *
+ * This client implements protocol v10 (SupportEmptyTabs) and negotiates down
+ * to whatever the server reports - older servers keep their original wire
+ * shapes (e.g., the v5-v7 nested command/profiler payloads vs. v8+ Cereal
+ * flat payloads), and a shape newer than the negotiated version is never
+ * sent. Correlated debugger-request / debuggee-response round trips (v7+)
+ * are managed by DebugRequestManager (sequences, timeouts, disconnect
+ * cleanup). Malformed or unsupported protocol input terminates the session
+ * with an actionable error instead of hanging.
  *
  * ## Integration Points
  *
@@ -42,59 +53,167 @@
  * ```
  */
 
-import { createConnection, Socket } from "net";
+import { createConnection, createServer, Socket } from "net";
 import { EventDispatcher, IEvent } from "ste-events";
 import Log from "../core/Log";
 import DebugMessageStreamParser from "./DebugMessageStreamParser";
+import DebugRequestManager, { DEBUG_REQUEST_TIMEOUT_MS } from "./DebugRequestManager";
 import {
   DebugConnectionState,
+  DiagnosticsDataSource,
+  DiagnosticsDisplayType,
   IDebugEventEnvelope,
+  IDebuggeeResponseEnvelope,
+  IDebuggerRequestEnvelope,
+  IDebuggerRequestLegacyEnvelope,
   IDebugMessageEnvelope,
   IDebugProtocolEnvelope,
   IDebugResponseEnvelope,
   IDebugSessionInfo,
+  IDiagnosticsTabDescriptor,
   IMinecraftDebugCapabilities,
+  INotificationEvent,
   IPluginDetails,
   IProfilerCaptureEvent,
   IProtocolEvent,
   IPrintEvent,
+  ISchemaEvent,
   IStatData,
   IStatDataModel,
   IStatEvent,
   IStoppedEvent,
   IThreadEvent,
+  MaxSupportedProtocolVersion,
+  MinSupportedProtocolVersion,
+  DebugAttachFailureReason,
   ProtocolVersion,
 } from "./IMinecraftDebugProtocol";
 
 const CONNECTION_RETRY_ATTEMPTS = 5;
 const CONNECTION_RETRY_WAIT_MS = 1000;
 const CONNECTION_TIMEOUT_MS = 5000; // Timeout for each connection attempt
-const PROTOCOL_HANDSHAKE_TIMEOUT_MS = 10000; // Timeout waiting for protocol event
 
-interface PendingRequest {
-  resolve: (result: unknown) => void;
-  reject: (error: Error) => void;
-  command: string;
+/**
+ * How long the client waits for the ProtocolEvent after the socket connects.
+ * Exported so callers that wait on an attach outcome (DedicatedServer's
+ * reattach) can size their deadline to the REAL handshake window instead of
+ * guessing and reporting a slow-but-valid negotiation as failed.
+ */
+export const PROTOCOL_HANDSHAKE_TIMEOUT_MS = 10000;
+
+// Allowed union values for SchemaEvent descriptor validation - mirror the
+// official DiagnosticsDataSource / DiagnosticsDisplayType types verbatim.
+const DIAGNOSTICS_DATA_SOURCES: readonly DiagnosticsDataSource[] = ["server", "client", "server_script"];
+const DIAGNOSTICS_DISPLAY_TYPES: readonly DiagnosticsDisplayType[] = [
+  "line_chart",
+  "stacked_line_chart",
+  "stacked_bar_chart",
+  "table",
+  "multi_column_table",
+  "dynamic_properties_table",
+];
+
+const DESCRIPTOR_OPTIONAL_STRINGS = ["title", "y_label", "key_label", "statistic_id"] as const;
+const DESCRIPTOR_OPTIONAL_NUMBERS = ["tick_range", "value_scalar", "target_value"] as const;
+const DESCRIPTOR_OPTIONAL_STRING_ARRAYS = ["value_labels", "statistic_ids"] as const;
+
+/**
+ * Describe the first way a wire value violates the IDiagnosticsTabDescriptor
+ * contract, or undefined when it satisfies it. This is the typed schema
+ * boundary: everything past it is trusted as IDiagnosticsTabDescriptor by
+ * consumers - a schema-driven renderer selects its component by display_type
+ * and iterates the optional arrays as arrays - so required fields, union
+ * membership, and the types of present optional fields are all enforced
+ * here rather than at every consumer.
+ */
+function describeDescriptorViolation(descriptor: unknown, index: number): string | undefined {
+  if (typeof descriptor !== "object" || descriptor === null) {
+    return `descriptor[${index}] is ${JSON.stringify(descriptor)}, expected a DiagnosticsTabDescriptor object`;
+  }
+
+  const d = descriptor as Record<string, unknown>;
+
+  for (const field of ["name", "stat_group_id"]) {
+    if (typeof d[field] !== "string") {
+      return `descriptor[${index}] required string field '${field}' is ${JSON.stringify(d[field])}`;
+    }
+  }
+
+  if (!DIAGNOSTICS_DATA_SOURCES.includes(d.data_source as DiagnosticsDataSource)) {
+    return (
+      `descriptor[${index}] 'data_source' is ${JSON.stringify(d.data_source)}, ` +
+      `expected one of: ${DIAGNOSTICS_DATA_SOURCES.join(", ")}`
+    );
+  }
+
+  if (!DIAGNOSTICS_DISPLAY_TYPES.includes(d.display_type as DiagnosticsDisplayType)) {
+    return (
+      `descriptor[${index}] 'display_type' is ${JSON.stringify(d.display_type)}, ` +
+      `expected one of: ${DIAGNOSTICS_DISPLAY_TYPES.join(", ")}`
+    );
+  }
+
+  for (const field of DESCRIPTOR_OPTIONAL_STRINGS) {
+    if (d[field] !== undefined && typeof d[field] !== "string") {
+      return `descriptor[${index}] optional field '${field}' is ${JSON.stringify(d[field])}, expected a string`;
+    }
+  }
+
+  for (const field of DESCRIPTOR_OPTIONAL_NUMBERS) {
+    if (d[field] !== undefined && typeof d[field] !== "number") {
+      return `descriptor[${index}] optional field '${field}' is ${JSON.stringify(d[field])}, expected a number`;
+    }
+  }
+
+  for (const field of DESCRIPTOR_OPTIONAL_STRING_ARRAYS) {
+    const value = d[field];
+
+    if (value !== undefined && (!Array.isArray(value) || value.some((entry) => typeof entry !== "string"))) {
+      return `descriptor[${index}] optional field '${field}' is ${JSON.stringify(value)}, expected an array of strings`;
+    }
+  }
+
+  if (d.is_empty_tab !== undefined && typeof d.is_empty_tab !== "boolean") {
+    return `descriptor[${index}] optional field 'is_empty_tab' is ${JSON.stringify(d.is_empty_tab)}, expected a boolean`;
+  }
+
+  return undefined;
 }
 
 export default class MinecraftDebugClient {
   private _socket: Socket | undefined;
+  // The socket of a TCP dial still in flight (not yet assigned to _socket).
+  // Retained so disconnect() can abort the dial itself instead of letting an
+  // obsolete dial connect briefly; see connect()/disconnect().
+  private _pendingDialSocket: Socket | undefined;
+  // Resolves the retry loop's backoff sleep early; set only while a sleep is
+  // pending. disconnect() invokes it so cancellation interrupts the sleep
+  // instead of waiting out the remaining backoff window.
+  private _connectBackoffCancel: (() => void) | undefined;
   private _parser: DebugMessageStreamParser;
   private _state: DebugConnectionState = DebugConnectionState.Disconnected;
   private _host: string = "localhost";
   private _port: number = 19144;
   private _protocolVersion: number = ProtocolVersion.Unknown;
-  private _clientProtocolVersion: number = ProtocolVersion.SupportBreakpointsAsRequest;
+  private _clientProtocolVersion: number = MaxSupportedProtocolVersion;
   private _targetModuleUuid: string | undefined;
+  // The caller's explicit target (requestTargetModule), kept separate from
+  // _targetModuleUuid so an AUTO-selected module from a previous session is
+  // never mistaken for a caller request on reconnect. Only this value is
+  // validated against the offered plugin list during the handshake.
+  private _requestedTargetModuleUuid: string | undefined;
   private _plugins: IPluginDetails[] = [];
-  private _capabilities: IMinecraftDebugCapabilities = {
-    supportsCommands: false,
-    supportsProfiler: false,
-    supportsBreakpointsAsRequest: false,
-  };
+  private _capabilities: IMinecraftDebugCapabilities = MinecraftDebugClient.capabilitiesForVersion(
+    ProtocolVersion.Unknown
+  );
+  // Last negotiated diagnostics schema (v9+ SchemaEvent); cleared on disconnect
+  private _schema: IDiagnosticsTabDescriptor[] | undefined;
   private _lastStatTick: number = 0;
   private _errorMessage: string | undefined;
   private _passcode: string | undefined;
+  // Typed reason for the last failed attach attempt; undefined once a
+  // handshake completes or before any attempt. See DebugAttachFailureReason.
+  private _lastAttachFailure: DebugAttachFailureReason | undefined;
 
   // Diagnostic tracking
   private _lastDataReceivedTime: number = 0;
@@ -102,8 +221,17 @@ export default class MinecraftDebugClient {
   private _statWarningLogged: boolean = false;
   private _statusCheckInterval: NodeJS.Timeout | undefined;
 
-  private _pendingRequests = new Map<number, PendingRequest>();
-  private _requestSeq = 0;
+  // Correlated request/response bookkeeping (v7+ debugger-requests and the
+  // legacy "response" envelope): sequence allocation, timeouts, disconnect
+  // cleanup. See DebugRequestManager.
+  private _requests = new DebugRequestManager();
+
+  // Generation counter for connect() attempts. disconnect() advances it, so
+  // an in-flight retry loop (backoff sleep or TCP dial) notices it has been
+  // canceled and aborts BEFORE a socket is assigned - otherwise a stop or
+  // teardown during the retry window would leave a zombie attempt that later
+  // attaches and consumes Minecraft's single debugger slot.
+  private _connectAttemptId: number = 0;
 
   // Events
   private _onConnected = new EventDispatcher<MinecraftDebugClient, IDebugSessionInfo>();
@@ -115,6 +243,8 @@ export default class MinecraftDebugClient {
   private _onError = new EventDispatcher<MinecraftDebugClient, Error>();
   private _onProtocol = new EventDispatcher<MinecraftDebugClient, IProtocolEvent>();
   private _onProfilerCapture = new EventDispatcher<MinecraftDebugClient, IProfilerCaptureEvent>();
+  private _onSchema = new EventDispatcher<MinecraftDebugClient, IDiagnosticsTabDescriptor[]>();
+  private _onNotification = new EventDispatcher<MinecraftDebugClient, INotificationEvent>();
 
   public get onConnected(): IEvent<MinecraftDebugClient, IDebugSessionInfo> {
     return this._onConnected.asEvent();
@@ -152,6 +282,29 @@ export default class MinecraftDebugClient {
     return this._onProfilerCapture.asEvent();
   }
 
+  /** Diagnostics schema descriptors (v9+ SchemaEvent), including v10 is_empty_tab. */
+  public get onSchema(): IEvent<MinecraftDebugClient, IDiagnosticsTabDescriptor[]> {
+    return this._onSchema.asEvent();
+  }
+
+  /** NotificationEvent messages (warnings/errors) from Minecraft. */
+  public get onNotification(): IEvent<MinecraftDebugClient, INotificationEvent> {
+    return this._onNotification.asEvent();
+  }
+
+  /**
+   * Last negotiated diagnostics schema descriptors, or undefined if the
+   * current session hasn't received a SchemaEvent (or is disconnected).
+   */
+  public get schema(): IDiagnosticsTabDescriptor[] | undefined {
+    return this._schema;
+  }
+
+  /** Number of correlated requests currently awaiting a response. */
+  public get pendingRequestCount(): number {
+    return this._requests.pendingCount;
+  }
+
   public get state(): DebugConnectionState {
     return this._state;
   }
@@ -171,7 +324,52 @@ export default class MinecraftDebugClient {
       capabilities: this._capabilities,
       lastStatTick: this._lastStatTick,
       errorMessage: this._errorMessage,
+      schema: this._schema,
     };
+  }
+
+  /**
+   * Request a specific script module to debug. Must be set before the
+   * handshake completes to take effect: the requested UUID is advertised in
+   * the protocol response instead of auto-selecting the first module
+   * Minecraft offers. Pass undefined to restore auto-selection.
+   *
+   * The requested UUID is validated against the plugin list Minecraft
+   * offers in its ProtocolEvent (as the official debugger does): a UUID
+   * absent from the offer fails the handshake as a moduleSelection
+   * disconnect BEFORE the session enters Connected - advertising a
+   * nonexistent target and resuming would report a false connected state
+   * for a session Minecraft has nothing to stream to.
+   */
+  public requestTargetModule(moduleUuid: string | undefined): void {
+    this._requestedTargetModuleUuid = moduleUuid;
+    this._targetModuleUuid = moduleUuid;
+  }
+
+  /**
+   * Capabilities implied by a negotiated protocol version. Mirrors the
+   * version history in IMinecraftDebugProtocol.ts.
+   */
+  static capabilitiesForVersion(version: number): IMinecraftDebugCapabilities {
+    return {
+      supportsCommands: version >= ProtocolVersion.SupportProfilerCaptures,
+      supportsProfiler: version >= ProtocolVersion.SupportProfilerCaptures,
+      supportsBreakpointsAsRequest: version >= ProtocolVersion.SupportBreakpointsAsRequest,
+      supportsDebuggerRequests: version >= ProtocolVersion.SupportDebuggerRequests,
+      supportsDiagnosticsSchema: version >= ProtocolVersion.SupportNativeDescriptors,
+      supportsEmptyTabs: version >= ProtocolVersion.SupportEmptyTabs,
+    };
+  }
+
+  /**
+   * Typed reason for the most recent failed attach attempt, or undefined if
+   * the last attempt succeeded (or none was made). "connectFailed" means TCP
+   * never connected; "handshakeFailed" means the socket was accepted but died
+   * before the ProtocolEvent handshake — the latter is the single-client
+   * contention signature.
+   */
+  public get lastAttachFailure(): DebugAttachFailureReason | undefined {
+    return this._lastAttachFailure;
   }
 
   constructor() {
@@ -183,8 +381,42 @@ export default class MinecraftDebugClient {
 
     this._parser.onError.subscribe((_, error) => {
       Log.error(`Debug protocol parse error: ${error.message}`);
-      this._onError.dispatch(this, error);
+
+      // Malformed framing means the byte stream is unrecoverable or the peer
+      // is not speaking this protocol - terminate the session with an
+      // actionable reason rather than hanging on a stream we cannot parse.
+      // The parser dispatches onError ONLY for framing/JSON failures; a
+      // throwing downstream subscriber is contained there and never reaches
+      // this disconnect (a consumer bug must not kill a healthy session).
+      //
+      // Cleanup runs BEFORE public notification: the state transition,
+      // socket teardown, and pending-request rejection are mandatory, while
+      // notification is best-effort. In the reverse order, a throwing
+      // onError consumer aborts this callback mid-flight - the exception
+      // escapes the socket data handler as an uncaught exception and the
+      // socket is never destroyed.
+      if (this._state === DebugConnectionState.Connected || this._state === DebugConnectionState.Connecting) {
+        this.disconnectWithError(`Malformed debug protocol input: ${error.message}`);
+      }
+
+      this._notifyError(error);
     });
+  }
+
+  /**
+   * Notify public onError subscribers, containing any subscriber exception:
+   * ste-events dispatches synchronously without catching, so a throwing
+   * consumer would otherwise abort the calling parser/socket callback -
+   * bypassing mandatory transport cleanup or escaping as an uncaught
+   * exception. Notification is best-effort; session state and the recorded
+   * error reason are never derived from whether it succeeded.
+   */
+  private _notifyError(error: Error): void {
+    try {
+      this._onError.dispatch(this, error);
+    } catch (e) {
+      Log.error(`[DebugClient] An onError subscriber threw while handling "${error.message}": ${e}`);
+    }
   }
 
   /**
@@ -202,6 +434,9 @@ export default class MinecraftDebugClient {
     this._passcode = passcode;
     this._state = DebugConnectionState.Connecting;
     this._errorMessage = undefined;
+    this._lastAttachFailure = undefined;
+
+    const attemptId = ++this._connectAttemptId;
 
     let socket: Socket | undefined;
     let lastError: Error | undefined;
@@ -212,7 +447,35 @@ export default class MinecraftDebugClient {
       const waitMs = attempt > 0 ? CONNECTION_RETRY_WAIT_MS * Math.pow(2, attempt - 1) : 0;
       if (waitMs > 0) {
         Log.debug(`[Debug] Waiting ${waitMs}ms before retry...`);
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
+
+        // Interruptible: disconnect() resolves this sleep immediately (the
+        // post-sleep generation check then aborts), so cancellation never
+        // waits out the remaining backoff window - up to 16s at the later
+        // attempts.
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            this._connectBackoffCancel = undefined;
+            resolve();
+          }, waitMs);
+
+          this._connectBackoffCancel = () => {
+            clearTimeout(timer);
+            this._connectBackoffCancel = undefined;
+            resolve();
+          };
+        });
+      }
+
+      // disconnect() may have canceled this attempt during the backoff sleep;
+      // stop before dialing again.
+      if (this._connectAttemptId !== attemptId) {
+        throw new Error("Debug connection attempt canceled");
+      }
+
+      // disconnect() may have canceled this attempt during the backoff sleep;
+      // stop before dialing again.
+      if (this._connectAttemptId !== attemptId) {
+        throw new Error("Debug connection attempt canceled");
       }
 
       Log.debug(`[Debug] Connection attempt ${attempt + 1}/${CONNECTION_RETRY_ATTEMPTS} to ${host}:${port}...`);
@@ -221,43 +484,213 @@ export default class MinecraftDebugClient {
         socket = await new Promise<Socket>((resolve, reject) => {
           const client = createConnection({ host, port });
 
+          // Retain the dialing socket so disconnect() can abort the TCP dial
+          // itself. It is not assigned to _socket until the dial succeeds, so
+          // without this a cancellation during the pending dial only took
+          // effect after the dial settled - the obsolete dial could still
+          // complete its TCP handshake and briefly consume Minecraft's
+          // single-client debugger slot before the generation check released
+          // it.
+          this._pendingDialSocket = client;
+
+          const settleDial = () => {
+            if (this._pendingDialSocket === client) {
+              this._pendingDialSocket = undefined;
+            }
+          };
+
           // Set a connection timeout
           const timeout = setTimeout(() => {
+            settleDial();
             client.destroy();
             reject(new Error(`Connection timeout after ${CONNECTION_TIMEOUT_MS}ms`));
           }, CONNECTION_TIMEOUT_MS);
 
           client.on("connect", () => {
             clearTimeout(timeout);
+            settleDial();
             client.removeAllListeners();
             resolve(client);
           });
 
           client.on("close", () => {
             clearTimeout(timeout);
+            settleDial();
+            client.destroy();
             reject(new Error("Connection closed"));
           });
 
           client.on("error", (err) => {
             clearTimeout(timeout);
+            settleDial();
+            client.destroy();
             reject(err);
           });
         });
         break;
       } catch (e: any) {
-        lastError = e;
-        Log.debug(`[Debug] Connection attempt ${attempt + 1} failed: ${e.message}`);
+        // Node's autoSelectFamily dial rejects with an AggregateError whose
+        // own message is EMPTY - the per-family causes (e.g. ECONNREFUSED on
+        // ::1 and 127.0.0.1) live in .errors. Flatten them so the failure
+        // surfaces a diagnosable cause instead of "unknown error".
+        if (e instanceof AggregateError && Array.isArray(e.errors) && e.errors.length > 0 && !e.message) {
+          lastError = new Error(e.errors.map((inner: any) => inner?.message ?? String(inner)).join("; "));
+        } else {
+          lastError = e;
+        }
+
+        Log.debug(`[Debug] Connection attempt ${attempt + 1} failed: ${lastError?.message}`);
+
+        // A canceled attempt settles immediately instead of sleeping out the
+        // next backoff window (the post-sleep generation check would abort
+        // anyway; this just removes the pointless wait).
+        if (this._connectAttemptId !== attemptId) {
+          throw new Error("Debug connection attempt canceled");
+        }
       }
+    }
+
+    // disconnect() may have canceled this attempt while the dial was in
+    // flight; release whatever the dial produced and bail out before any
+    // socket or session state is assigned.
+    if (this._connectAttemptId !== attemptId) {
+      socket?.destroy();
+      throw new Error("Debug connection attempt canceled");
     }
 
     if (!socket) {
       this._state = DebugConnectionState.Error;
+      this._lastAttachFailure = "connectFailed";
       this._errorMessage = `Failed to connect to ${host}:${port} after ${CONNECTION_RETRY_ATTEMPTS} attempts: ${lastError?.message || "unknown error"}`;
       Log.message(`[Debug] Connection failed: ${lastError?.message || "unknown error"}`);
       throw new Error(this._errorMessage);
     }
 
     Log.debug(`[Debug] Socket connection established to ${host}:${port}`);
+
+    this._beginSession(socket);
+  }
+
+  /**
+   * Listen on host:port and wait for Minecraft to establish the OUTBOUND
+   * debugger connection (`script debugger connect <host> <port>`). Counterpart
+   * of connect() for current BDS builds, whose inbound `script debugger
+   * listen` listener has been observed to flap (accept-then-reset loop);
+   * the outbound direction matches the official minecraft-debugger extension
+   * model. Resolves once the first connection is accepted; the protocol
+   * handshake then completes asynchronously exactly as with connect().
+   *
+   * The caller should issue the `script debugger connect` command AFTER this
+   * method has been started (the listener is bound before the returned
+   * promise's first await completes) - awaiting the returned promise itself
+   * only resolves once Minecraft dials in.
+   */
+  public async serve(host: string = "127.0.0.1", port: number = 19144, acceptTimeoutMs: number = 15000): Promise<void> {
+    if (this._state === DebugConnectionState.Connected || this._state === DebugConnectionState.Connecting) {
+      throw new Error("Already connected or connecting");
+    }
+
+    this._host = host;
+    this._port = port;
+    this._state = DebugConnectionState.Connecting;
+    this._errorMessage = undefined;
+
+    const attemptId = ++this._connectAttemptId;
+
+    let socket: Socket;
+
+    try {
+      socket = await new Promise<Socket>((resolve, reject) => {
+        const server = createServer();
+        this._pendingAcceptServer = server;
+
+        const cleanup = () => {
+          clearTimeout(timer);
+
+          if (this._pendingAcceptServer === server) {
+            this._pendingAcceptServer = undefined;
+          }
+
+          server.close();
+        };
+
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(
+            new Error(
+              `Minecraft did not establish the outbound debugger connection to ${host}:${port} within ${
+                acceptTimeoutMs / 1000
+              }s`
+            )
+          );
+        }, acceptTimeoutMs);
+
+        server.once("error", (e: NodeJS.ErrnoException) => {
+          cleanup();
+          reject(new Error(`Could not listen for the debugger connection on ${host}:${port}: ${e.message}`));
+        });
+
+        server.once("connection", (accepted) => {
+          cleanup();
+          resolve(accepted);
+        });
+
+        // disconnect() cancels a pending accept by closing the server; make
+        // that settle the promise promptly instead of waiting out the
+        // accept timeout. (After a normal accept, this rejection is a no-op.)
+        server.once("close", () => {
+          cleanup();
+          reject(new Error("Debug connection attempt canceled"));
+        });
+
+        server.listen(port, host, () => {
+          Log.debug(`[Debug] Listening on ${host}:${port} for Minecraft's outbound debugger connection...`);
+        });
+      });
+    } catch (e: any) {
+      // disconnect() cancels the pending accept by closing the server; the
+      // rejection then races the generation check here.
+      if (this._connectAttemptId !== attemptId) {
+        throw new Error("Debug connection attempt canceled");
+      }
+
+      this._state = DebugConnectionState.Error;
+      this._errorMessage = e?.message ? String(e.message) : String(e);
+      Log.message(`[Debug] Outbound debugger connection failed: ${this._errorMessage}`);
+      throw new Error(this._errorMessage);
+    }
+
+    if (this._connectAttemptId !== attemptId) {
+      socket.destroy();
+      throw new Error("Debug connection attempt canceled");
+    }
+
+    Log.debug(`[Debug] Accepted Minecraft's outbound debugger connection on ${host}:${port}`);
+
+    this._beginSession(socket);
+  }
+
+  // Pending accept-mode listener (serve()); closed on disconnect/cancel.
+  private _pendingAcceptServer: ReturnType<typeof createServer> | undefined;
+
+  /**
+   * Wire an established socket into the session: parser, keep-alive, event
+   * handlers, status checks, and the protocol-handshake timeout. Shared by
+   * connect() (MCT dials BDS) and serve() (BDS dials MCT).
+   */
+  private _beginSession(socket: Socket): void {
+    // Defensive: a previous session's timers must never survive into this
+    // one (the normal teardown clears them, but overwriting the handles
+    // below without clearing would leak a still-armed timer otherwise).
+    if (this._statusCheckInterval) {
+      clearInterval(this._statusCheckInterval);
+      this._statusCheckInterval = undefined;
+    }
+
+    if (this._handshakeTimeoutId) {
+      clearTimeout(this._handshakeTimeoutId);
+      this._handshakeTimeoutId = undefined;
+    }
 
     this._socket = socket;
     this._parser.reset();
@@ -267,8 +700,19 @@ export default class MinecraftDebugClient {
     // Set TCP keep-alive to detect dead connections
     socket.setKeepAlive(true, 30000); // 30 second keep-alive
 
-    // Set up socket event handlers
+    // Every handler below is identity-gated on its ORIGINATING socket:
+    // socket callbacks can fire asynchronously after the session moved to a
+    // replacement socket (a torn-down socket's buffered "close" arrives on
+    // a later tick), and without the gate a stale socket's close would call
+    // _handleDisconnect() - whose teardown destroys this._socket, now the
+    // REPLACEMENT - killing the new handshake. Teardown also detaches a
+    // released socket's listeners (_releaseSocket); the gate is the second
+    // line of defense.
     socket.on("data", (data) => {
+      if (this._socket !== socket) {
+        return;
+      }
+
       this._lastDataReceivedTime = Date.now();
       this._messageCount++;
       Log.verbose(`[DebugClient] Socket received ${data.length} bytes of raw data (msg #${this._messageCount})`);
@@ -276,11 +720,21 @@ export default class MinecraftDebugClient {
     });
 
     socket.on("error", (e) => {
+      if (this._socket !== socket) {
+        Log.debug(`[DebugClient] Ignoring ERROR from an abandoned session's socket: ${e.message}`);
+        return;
+      }
+
       Log.message(`[DebugClient] Socket ERROR event: ${e.message}`);
       this._handleDisconnect(`Socket error: ${e.message}`);
     });
 
     socket.on("close", () => {
+      if (this._socket !== socket) {
+        Log.debug(`[DebugClient] Ignoring CLOSE from an abandoned session's socket`);
+        return;
+      }
+
       Log.debug(`[DebugClient] Socket CLOSE event`);
       this._handleDisconnect("Socket closed");
     });
@@ -322,7 +776,9 @@ export default class MinecraftDebugClient {
     // Set a timeout for the protocol handshake
     // If we don't receive a ProtocolEvent within the timeout, disconnect
     const handshakeTimeout = setTimeout(() => {
-      if (this._state === DebugConnectionState.Connecting) {
+      // Same identity gate as the socket handlers: a stale session's timeout
+      // must not tear down the replacement's in-progress handshake.
+      if (this._socket === socket && this._state === DebugConnectionState.Connecting) {
         Log.message(
           `[Debug] Protocol handshake TIMEOUT after ${PROTOCOL_HANDSHAKE_TIMEOUT_MS}ms - no ProtocolEvent received`
         );
@@ -342,31 +798,104 @@ export default class MinecraftDebugClient {
   private _handshakeTimeoutId: NodeJS.Timeout | undefined;
 
   /**
-   * Disconnect from the debug server.
+   * Disconnect from the debug server. Idempotent: safe to call on an
+   * already-disconnected client (e.g., an owner disposing a client whose
+   * onDisconnected event it is currently handling). Also cancels an
+   * in-flight connect(): the retry loop checks the attempt generation after
+   * every await and aborts before assigning a socket, AND the pending dial
+   * socket itself is destroyed - generation invalidation alone would let an
+   * obsolete dial complete its TCP handshake and briefly occupy Minecraft's
+   * single-client debug endpoint before being released.
+   *
+   * Destroys the socket BEFORE running the disconnect handling so a
+   * user-initiated disconnect during the Connecting state is never
+   * misclassified as "handshakeFailed" (see _handleDisconnect).
    */
   public disconnect(): void {
+    this._connectAttemptId++;
+
+    // Cancel a pending accept-mode listener (serve()) so its port is
+    // released and its promise rejects instead of accepting a late dial.
+    if (this._pendingAcceptServer) {
+      this._pendingAcceptServer.close();
+      this._pendingAcceptServer = undefined;
+    }
+
+    // Interrupt a pending retry-backoff sleep so the canceled connect()
+    // settles now instead of after the remaining backoff window.
+    if (this._connectBackoffCancel) {
+      this._connectBackoffCancel();
+    }
+
+    // Abort an in-flight outbound dial synchronously: destroying the
+    // retained socket settles the pending dial promise now, instead of
+    // letting the obsolete dial complete its TCP handshake first.
+    if (this._pendingDialSocket) {
+      this._pendingDialSocket.destroy();
+      this._pendingDialSocket = undefined;
+    }
+
     if (this._socket) {
-      this._socket.destroy();
+      this._releaseSocket(this._socket);
       this._socket = undefined;
     }
+
+    if (this._state === DebugConnectionState.Disconnected) {
+      return;
+    }
+
     this._handleDisconnect("Client requested disconnect");
   }
 
   /**
-   * Send a Minecraft command.
+   * Detach an abandoned socket's listeners and destroy it. Detaching BEFORE
+   * destruction means its buffered/deferred events (Node delivers "close" on
+   * a later tick) can never re-enter the session handlers - which by then
+   * may belong to a replacement socket. A no-op error listener stays behind:
+   * an orphaned socket erroring with zero listeners would throw as an
+   * uncaught exception.
+   */
+  private _releaseSocket(socket: Socket): void {
+    socket.removeAllListeners();
+    socket.on("error", () => {});
+    socket.destroy();
+  }
+
+  /**
+   * Terminate the session because of a protocol violation (malformed input,
+   * unsupported version, missing required fields), preserving the actionable
+   * reason as the session's error state - the alternative is a session that
+   * silently hangs on a stream it cannot interpret.
+   */
+  private disconnectWithError(reason: string): void {
+    Log.message(`[DebugClient] Terminating debug session: ${reason}`);
+
+    if (this._socket) {
+      this._releaseSocket(this._socket);
+      this._socket = undefined;
+    }
+
+    this._handleDisconnect(reason);
+  }
+
+  /**
+   * Send a Minecraft command. The wire shape is version-gated: the nested
+   * { command: { command, dimension_type } } object exists only between v5
+   * (SupportProfilerCaptures) and v8 (SupportCerealSerialization); Cereal
+   * serialization flattened outbound payloads back to top-level fields.
+   * Mirrors the branching in Mojang/minecraft-debugger's session handling -
+   * a shape newer than the negotiated version is never sent.
    */
   public sendCommand(command: string, dimensionType: "overworld" | "nether" | "the_end" = "overworld"): void {
     if (!this.isConnected) {
       throw new Error("Not connected to debug server");
     }
 
-    if (this._protocolVersion < ProtocolVersion.SupportProfilerCaptures) {
-      this._sendMessage({
-        type: "minecraftCommand",
-        command: command,
-        dimension_type: dimensionType,
-      });
-    } else {
+    const useNestedShape =
+      this._protocolVersion >= ProtocolVersion.SupportProfilerCaptures &&
+      this._protocolVersion < ProtocolVersion.SupportCerealSerialization;
+
+    if (useNestedShape) {
       this._sendMessage({
         type: "minecraftCommand",
         command: {
@@ -374,7 +903,77 @@ export default class MinecraftDebugClient {
           dimension_type: dimensionType,
         },
       });
+    } else {
+      this._sendMessage({
+        type: "minecraftCommand",
+        command: command,
+        dimension_type: dimensionType,
+      });
     }
+  }
+
+  /**
+   * Send a correlated debugger request (protocol v7+, SupportDebuggerRequests)
+   * and await Minecraft's debuggee-response for the same request_seq. Resolves
+   * with the response's args; rejects with a DebugRequestError on a Minecraft-
+   * reported failure, on timeout, or when the session disconnects.
+   */
+  public sendRequest(request: string, args?: unknown, timeoutMs: number = DEBUG_REQUEST_TIMEOUT_MS): Promise<unknown> {
+    if (!this.isConnected) {
+      return Promise.reject(new Error("Not connected to debug server"));
+    }
+
+    if (!this._capabilities.supportsDebuggerRequests) {
+      return Promise.reject(
+        new Error(
+          `Correlated debugger requests require protocol v${ProtocolVersion.SupportDebuggerRequests}+ ` +
+            `(SupportDebuggerRequests); this session negotiated v${this._protocolVersion}.`
+        )
+      );
+    }
+
+    const requestSeq = this._requests.allocateSequence();
+
+    // The wire shape is version-gated exactly like command/profiler
+    // serialization: v7 (SupportDebuggerRequests, pre-Cereal) nests the
+    // correlated fields under `request`, while v8+
+    // (SupportCerealSerialization) flattens them to the top level. Mirrors
+    // the official request-manager's branching - a v7 server cannot
+    // deserialize the flat shape, so every request would be rejected or
+    // time out. Sequence allocation and timeout tracking are identical in
+    // both shapes; the debuggee-response comes back with a top-level
+    // request_seq in either case.
+    const envelope: IDebuggerRequestEnvelope | IDebuggerRequestLegacyEnvelope =
+      this._protocolVersion >= ProtocolVersion.SupportCerealSerialization
+        ? {
+            type: "debugger-request",
+            request_seq: requestSeq,
+            request: request,
+            args: args,
+          }
+        : {
+            type: "debugger-request",
+            request: {
+              request_seq: requestSeq,
+              request: request,
+              args: args,
+            },
+          };
+
+    const responsePromise = this._requests.track(requestSeq, request, timeoutMs);
+
+    // A synchronous send failure - circular args, BigInt, a throwing
+    // toJSON, a socket-write error - must settle the tracked request NOW.
+    // Without this, sendRequest threw before returning responsePromise, and
+    // the inaccessible pending request sat until its timeout fired and
+    // rejected unhandled.
+    try {
+      this._sendMessage(envelope);
+    } catch (e) {
+      this._requests.rejectSendFailure(requestSeq, e instanceof Error ? e.message : String(e));
+    }
+
+    return responsePromise;
   }
 
   /**
@@ -392,36 +991,53 @@ export default class MinecraftDebugClient {
   }
 
   /**
-   * Start the profiler.
+   * Start the profiler. v8+ Cereal serialization expects flat payloads;
+   * older servers expect the fields nested under "profiler".
    */
   public startProfiler(): void {
     if (!this._capabilities.supportsProfiler) {
       throw new Error("Profiler not supported by this Minecraft version");
     }
 
-    this._sendMessage({
-      type: "startProfiler",
-      profiler: {
+    if (this._protocolVersion >= ProtocolVersion.SupportCerealSerialization) {
+      this._sendMessage({
+        type: "startProfiler",
         target_module_uuid: this._targetModuleUuid,
-      },
-    });
+      });
+    } else {
+      this._sendMessage({
+        type: "startProfiler",
+        profiler: {
+          target_module_uuid: this._targetModuleUuid,
+        },
+      });
+    }
   }
 
   /**
-   * Stop the profiler and capture data.
+   * Stop the profiler and capture data. Same v8 shape branching as
+   * startProfiler.
    */
   public stopProfiler(capturesPath: string): void {
     if (!this._capabilities.supportsProfiler) {
       throw new Error("Profiler not supported by this Minecraft version");
     }
 
-    this._sendMessage({
-      type: "stopProfiler",
-      profiler: {
+    if (this._protocolVersion >= ProtocolVersion.SupportCerealSerialization) {
+      this._sendMessage({
+        type: "stopProfiler",
         captures_path: capturesPath,
         target_module_uuid: this._targetModuleUuid,
-      },
-    });
+      });
+    } else {
+      this._sendMessage({
+        type: "stopProfiler",
+        profiler: {
+          captures_path: capturesPath,
+          target_module_uuid: this._targetModuleUuid,
+        },
+      });
+    }
   }
 
   /**
@@ -462,6 +1078,8 @@ export default class MinecraftDebugClient {
     } else if (envelope.type === "response") {
       Log.verbose(`[DebugClient] Response for command: ${(envelope as IDebugResponseEnvelope).command}`);
       this._handleResponse(envelope as IDebugResponseEnvelope);
+    } else if (envelope.type === "debuggee-response") {
+      this._handleDebuggeeResponse(envelope as IDebuggeeResponseEnvelope);
     } else if (envelope.type === "protocol") {
       Log.verbose(`[DebugClient] Received protocol message (as envelope.type=protocol)`);
       // Handle protocol messages that come as envelope.type="protocol" instead of event
@@ -487,6 +1105,10 @@ export default class MinecraftDebugClient {
         this._handleStatEvent(event as unknown as IStatEvent);
         break;
 
+      case "SchemaEvent":
+        this._handleSchemaEvent(event as unknown as ISchemaEvent);
+        break;
+
       case "StoppedEvent":
         Log.verbose(`[DebugClient] Received StoppedEvent`);
         this._onStopped.dispatch(this, event as unknown as IStoppedEvent);
@@ -503,6 +1125,7 @@ export default class MinecraftDebugClient {
 
       case "NotificationEvent":
         Log.verbose(`Debug notification: ${event.message}`);
+        this._onNotification.dispatch(this, event as unknown as INotificationEvent);
         break;
 
       case "ProfilerCapture":
@@ -516,7 +1139,11 @@ export default class MinecraftDebugClient {
   }
 
   /**
-   * Handle protocol handshake event.
+   * Handle protocol handshake event: validate the server-reported version,
+   * negotiate down to min(server, client) - so a newer server is used at
+   * MCT's maximum and every older supported version keeps working - and
+   * terminate with an actionable error on malformed or unsupported input
+   * instead of continuing with an undefined protocol level.
    */
   private _handleProtocolEvent(event: IProtocolEvent): void {
     Log.debug(`[DebugClient] ProtocolEvent received: version=${event.version}, plugins=${event.plugins?.length || 0}`);
@@ -524,15 +1151,68 @@ export default class MinecraftDebugClient {
     Log.verbose(`[DebugClient] Plugins: ${JSON.stringify(event.plugins)}`);
     Log.verbose(`[DebugClient] Requires passcode: ${event.require_passcode}`);
 
+    // The protocol version is a discrete integer enum. A fractional value
+    // (e.g. 7.5) would otherwise be negotiated as a real wire version -
+    // min(7.5, client) advertises nonexistent v7.5 in the handshake response
+    // while capability checks and serialization branches independently
+    // truncate-compare it - leaving the endpoints disagreeing about the wire
+    // shape on a session that stays "connected" but is unusable. Integer
+    // FUTURE versions (e.g. 11) remain accepted and are capped to the
+    // client's maximum by the min() negotiation below.
+    if (typeof event.version !== "number" || !Number.isInteger(event.version)) {
+      const error = new Error(
+        `Malformed ProtocolEvent: required integer 'version' field is ${JSON.stringify(
+          event.version
+        )}. The peer is not a compatible Minecraft debug server.`
+      );
+      // Disconnect BEFORE notifying: a throwing onError consumer must not
+      // leave the session in Connecting (with the handshake timeout as the
+      // only way out) by aborting this handler ahead of the cleanup.
+      this.disconnectWithError(error.message);
+      this._notifyError(error);
+      return;
+    }
+
+    if (event.version < MinSupportedProtocolVersion) {
+      const error = new Error(
+        `Unsupported debug protocol version ${event.version}: MCT supports v${MinSupportedProtocolVersion} ` +
+          `through v${MaxSupportedProtocolVersion}. Update Minecraft or Minecraft Creator Tools.`
+      );
+      this.disconnectWithError(error.message);
+      this._notifyError(error);
+      return;
+    }
+
+    // Fail fast with a distinct reason when Minecraft requires a passcode we
+    // don't have; otherwise the server silently drops us after the handshake
+    // response, which surfaces as a confusing premature close.
+    if (event.require_passcode && !this._passcode) {
+      this._handleDisconnect("Passcode required by Minecraft but none was provided");
+      return;
+    }
+
     this._protocolVersion = Math.min(event.version, this._clientProtocolVersion);
     this._plugins = event.plugins || [];
 
-    // Determine capabilities based on protocol version
-    this._capabilities = {
-      supportsCommands: this._protocolVersion >= ProtocolVersion.SupportProfilerCaptures,
-      supportsProfiler: this._protocolVersion >= ProtocolVersion.SupportProfilerCaptures,
-      supportsBreakpointsAsRequest: this._protocolVersion >= ProtocolVersion.SupportBreakpointsAsRequest,
-    };
+    // Determine capabilities based on the negotiated protocol version
+    this._capabilities = MinecraftDebugClient.capabilitiesForVersion(this._protocolVersion);
+
+    // A caller-requested target must be one of the modules Minecraft just
+    // offered (the official debugger validates configured UUIDs the same
+    // way). Advertising an unoffered UUID and resuming would mark this
+    // session connected while Minecraft has no such module to stream from -
+    // a false connected state. UUIDs compare case- and brace-insensitively:
+    // manifests and BDS can disagree on both.
+    if (this._requestedTargetModuleUuid !== undefined) {
+      const normalizeUuid = (uuid: string) => uuid.toLowerCase().replace(/[{}]/g, "");
+      const requested = normalizeUuid(this._requestedTargetModuleUuid);
+      const offered = this._plugins.some((p) => p.module_uuid && normalizeUuid(p.module_uuid) === requested);
+
+      if (!offered) {
+        this._handleDisconnect("The requested target module was not offered by Minecraft");
+        return;
+      }
+    }
 
     // Auto-select the first plugin if no target module specified
     // This is required to receive stats events for that module
@@ -576,6 +1256,7 @@ export default class MinecraftDebugClient {
 
     // Mark as connected
     this._state = DebugConnectionState.Connected;
+    this._lastAttachFailure = undefined;
     Log.message(`[Debug] Connected to Minecraft debugger (v${this._protocolVersion})`);
 
     this._onProtocol.dispatch(this, event);
@@ -583,9 +1264,18 @@ export default class MinecraftDebugClient {
   }
 
   /**
-   * Handle statistics event.
+   * Handle statistics event. State-guarded like the protocol/connected
+   * paths: stats arriving outside a connected session (e.g. a frame parsed
+   * after a fatal error already disconnected it) must not be published -
+   * consumers like DebugStatsPanel treat incoming stats as proof of a live
+   * connection.
    */
   private _handleStatEvent(event: IStatEvent): void {
+    if (this._state !== DebugConnectionState.Connected) {
+      Log.verbose(`[DebugClient] Dropping StatEvent2 (tick=${event.tick}) - session state is ${this._state}`);
+      return;
+    }
+
     this._lastStatTick = event.tick;
     Log.verbose(`[DebugClient] StatEvent2 received: tick=${event.tick}, top-level stats: ${event.stats?.length || 0}`);
 
@@ -643,18 +1333,118 @@ export default class MinecraftDebugClient {
   }
 
   /**
-   * Handle response messages.
+   * Handle a diagnostics SchemaEvent (protocol v9+): store the descriptors as
+   * the session's negotiated schema and notify typed consumers. A malformed
+   * payload is surfaced as an actionable error and ignored - a bad schema
+   * must not take down an otherwise healthy session.
+   */
+  private _handleSchemaEvent(event: ISchemaEvent): void {
+    if (!Array.isArray(event.descriptors)) {
+      const error = new Error(
+        `Malformed SchemaEvent: required 'descriptors' field is ${JSON.stringify(
+          event.descriptors
+        )}, expected an array of DiagnosticsTabDescriptor. Ignoring the event.`
+      );
+      Log.message(`[DebugClient] ${error.message}`);
+      this._notifyError(error);
+      return;
+    }
+
+    // Validate every descriptor before caching or dispatching: past this
+    // point the payload is typed IDiagnosticsTabDescriptor[] and consumers
+    // trust that contract. An invalid descriptor is dropped and surfaced as
+    // an actionable error while valid descriptors still apply - a newer
+    // server introducing an unknown display_type must not take down every
+    // other diagnostics view. Consumers still never receive (or find
+    // cached) a partially typed entry.
+    const validDescriptors: IDiagnosticsTabDescriptor[] = [];
+
+    for (let i = 0; i < event.descriptors.length; i++) {
+      const violation = describeDescriptorViolation(event.descriptors[i], i);
+
+      if (violation !== undefined) {
+        const error = new Error(`Malformed SchemaEvent: ${violation}. Ignoring this descriptor.`);
+        Log.message(`[DebugClient] ${error.message}`);
+        this._notifyError(error);
+      } else {
+        validDescriptors.push(event.descriptors[i]);
+      }
+    }
+
+    // Nothing usable in a non-empty payload: keep whatever schema (if any)
+    // the session already has instead of caching an empty tab strip.
+    if (validDescriptors.length === 0 && event.descriptors.length > 0) {
+      return;
+    }
+
+    Log.debug(
+      `[DebugClient] SchemaEvent received: ${event.descriptors.length} descriptors (${validDescriptors.length} valid)`
+    );
+
+    this._schema = validDescriptors;
+    this._onSchema.dispatch(this, validDescriptors);
+  }
+
+  /**
+   * Handle legacy DAP-style response messages (pre-v7 "response" envelope).
+   * Correlated through the same request manager as debuggee-responses.
    */
   private _handleResponse(response: IDebugResponseEnvelope): void {
-    const pending = this._pendingRequests.get(response.request_seq);
-    if (pending) {
-      this._pendingRequests.delete(response.request_seq);
+    if (typeof response.request_seq !== "number") {
+      this._notifyError(
+        new Error(
+          `Malformed response envelope: required numeric 'request_seq' field is ${JSON.stringify(
+            response.request_seq
+          )}. The response cannot be correlated to a request.`
+        )
+      );
+      return;
+    }
 
-      if (response.success) {
-        pending.resolve(response.body);
-      } else {
-        pending.reject(new Error(response.message || `Request ${pending.command} failed`));
-      }
+    const known = this._requests.resolveResponse(response.request_seq, response.success, response.body, response.message);
+
+    if (!known) {
+      this._notifyError(
+        new Error(
+          `Invalid response correlation: no pending request has request_seq ${response.request_seq} ` +
+            `(command '${response.command}'). The response was dropped.`
+        )
+      );
+    }
+  }
+
+  /**
+   * Handle a correlated debuggee-response (protocol v7+). Mirrors the
+   * official DebuggeeResponseEnvelope: payload in 'args', settlement
+   * requires an explicit success === true (the official request-manager
+   * rejects on !success), failures carry 'response_message'.
+   */
+  private _handleDebuggeeResponse(response: IDebuggeeResponseEnvelope): void {
+    if (typeof response.request_seq !== "number") {
+      this._notifyError(
+        new Error(
+          `Malformed debuggee-response: required numeric 'request_seq' field is ${JSON.stringify(
+            response.request_seq
+          )}. The response cannot be correlated to a request.`
+        )
+      );
+      return;
+    }
+
+    const known = this._requests.resolveResponse(
+      response.request_seq,
+      response.success,
+      response.args,
+      response.response_message
+    );
+
+    if (!known) {
+      this._notifyError(
+        new Error(
+          `Invalid response correlation: no pending debugger-request has request_seq ${response.request_seq}. ` +
+            `The debuggee-response was dropped.`
+        )
+      );
     }
   }
 
@@ -662,8 +1452,28 @@ export default class MinecraftDebugClient {
    * Handle disconnect.
    */
   private _handleDisconnect(reason: string): void {
+    // A redundant disconnect must not overwrite the recorded session
+    // reason: after disconnectWithError() tears the session down for a
+    // protocol violation, the destroyed socket's async "close" event fires
+    // this handler again with a generic "Socket closed" - which would
+    // clobber the specific, actionable reason the session actually ended
+    // for.
+    if (this._state === DebugConnectionState.Disconnected) {
+      return;
+    }
+
     const wasConnected = this._state === DebugConnectionState.Connected;
     const wasConnecting = this._state === DebugConnectionState.Connecting;
+
+    // TCP was accepted (we still hold a live socket) but the connection died
+    // before the ProtocolEvent handshake completed. This is the signature of
+    // Minecraft's single-client endpoint being busy: it accepts the socket and
+    // then closes/ignores it. User-initiated disconnect() clears _socket
+    // before calling us, so it doesn't land here.
+    if (wasConnecting && this._socket !== undefined) {
+      this._lastAttachFailure = "handshakeFailed";
+    }
+
     this._state = DebugConnectionState.Disconnected;
     this._errorMessage = reason;
 
@@ -679,20 +1489,29 @@ export default class MinecraftDebugClient {
       this._statusCheckInterval = undefined;
     }
 
+    // Release the socket - callers of _handleDisconnect (handshake timeout,
+    // passcode/protocol rejection) may reach here with the socket still
+    // open. Listeners are detached before destruction so the destroyed
+    // socket's deferred close event cannot re-enter this handler against a
+    // future replacement session.
+    if (this._socket) {
+      this._releaseSocket(this._socket);
+    }
+
     this._socket = undefined;
     this._protocolVersion = ProtocolVersion.Unknown;
     this._plugins = [];
-    this._capabilities = {
-      supportsCommands: false,
-      supportsProfiler: false,
-      supportsBreakpointsAsRequest: false,
-    };
+    this._capabilities = MinecraftDebugClient.capabilitiesForVersion(ProtocolVersion.Unknown);
+    // The schema belongs to the session; a reconnect renegotiates it.
+    this._schema = undefined;
+    // So does an AUTO-selected target: restore the target to the caller's
+    // explicit request (undefined when none), or a reused client's next
+    // handshake would skip auto-selection and advertise the module the
+    // PREVIOUS session picked - stale, and possibly absent from the new offer.
+    this._targetModuleUuid = this._requestedTargetModuleUuid;
 
-    // Reject all pending requests
-    for (const [seq, pending] of this._pendingRequests) {
-      pending.reject(new Error(`Disconnected: ${reason}`));
-    }
-    this._pendingRequests.clear();
+    // Reject all pending correlated requests so nothing leaks or hangs.
+    this._requests.rejectAll(reason);
 
     if (wasConnected || wasConnecting) {
       Log.message(`Debug client disconnected: ${reason}`);

@@ -2,6 +2,12 @@
 // Licensed under the MIT License.
 
 import { RemoteServerAccessLevel } from "./ICreatorToolsData";
+import {
+  DebugOwnershipState,
+  IDiagnosticsTabDescriptor,
+  IMinecraftDebugCapabilities,
+  IPluginDetails,
+} from "../debugger/IMinecraftDebugProtocol";
 
 export enum AuthenticationResult {
   pending = 0,
@@ -40,6 +46,26 @@ export interface ISlotConfig {
   debugLastStatTick?: number;
   /** Debug connection error message if any */
   debugErrorMessage?: string;
+  /** Debugger lifecycle stage snapshot (DebuggerLifecycleStage value) */
+  debugStage?: string;
+  /** Failure kind when debugStage is "failed" (DebuggerFailureKind value) */
+  debugFailureKind?: string;
+  /** Sanitized lifecycle error message when debugStage is "failed" */
+  debugStageMessage?: string;
+  /** UUID of the script module the debug session is targeting */
+  debugTargetModuleUuid?: string;
+  /** Script modules (plugins) available on the debug target */
+  debugPlugins?: IPluginDetails[];
+  /** Debug endpoint host */
+  debugHost?: string;
+  /** The dynamically reserved debug endpoint port */
+  debugPort?: number;
+  /** Capabilities of the negotiated debug protocol version */
+  debugCapabilities?: IMinecraftDebugCapabilities;
+  /** Who owns the single-client debug endpoint */
+  debugOwnership?: DebugOwnershipState;
+  /** Last negotiated diagnostics schema (protocol v9+); cleared on disconnect */
+  debugSchema?: IDiagnosticsTabDescriptor[];
 }
 
 export interface CreatorToolsServerStatus {

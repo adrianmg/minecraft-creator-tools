@@ -15,6 +15,8 @@ import ProjectInfoSet from "../info/ProjectInfoSet";
 import ContentIndex from "../core/ContentIndex";
 import ItemTypeDefinition from "../minecraft/ItemTypeDefinition";
 import ProjectInfoUtilities from "../info/ProjectInfoUtilities";
+import { ValidationRuleDefinition } from "../info/tests/ValidationRuleDefinition";
+import { ItemTypeValidationRules } from "./ItemTypeManagerData";
 
 export enum ItemTypeUpdate {
   UpdateFormatVersionToLatest = 1,
@@ -43,6 +45,8 @@ export enum ItemTypeInfo {
 export default class ItemTypeManager implements IProjectInfoGenerator, IProjectUpdater {
   id = "ITEMTYPE";
   title = "Item Type";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = ItemTypeValidationRules;
 
   getTopicData(topicId: number): IProjectInfoTopicData | undefined {
     const formatVersion = {

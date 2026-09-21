@@ -9,11 +9,43 @@
 .dsp-header {
   display: flex;
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--color-border);
+}
+
+.dsp-status-area {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dsp-info-chip {
+  font-size: 0.8em;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 2px 8px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsp-ownership.attachedByMct {
+  border-color: #22c55e;
+  color: #22c55e;
+}
+
+.dsp-ownership.attachedExternally {
+  border-color: #f59e0b;
+  color: #f59e0b;
 }
 
 .dsp-status {
@@ -62,42 +94,18 @@
   margin-left: auto;
 }
 
-.dsp-control-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background: var(--color-surface-alt);
-  color: var(--color-text-primary);
-  cursor: pointer;
+/* Header controls are MUI outlined Buttons; base look, hover, and disabled
+   states come from the MUI theme. These rules only add what MUI does not:
+   as-written labels and the paused/profiling accent states. */
+.dsp-controls .dsp-control-btn {
+  text-transform: none;
   font-size: 0.85em;
-  transition: all 0.15s ease;
-}
-
-.dsp-control-btn:hover:not(:disabled) {
-  background: var(--color-surface-hover);
-  border-color: var(--color-border-hover);
-}
-
-.dsp-control-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.dsp-control-btn.running {
-  color: var(--color-text-primary);
 }
 
 .dsp-control-btn.paused {
   background: rgba(245, 158, 11, 0.15);
   border-color: #f59e0b;
   color: #22c55e;
-}
-
-.dsp-control-btn.profiler {
-  color: var(--color-text-primary);
 }
 
 .dsp-control-btn.profiler.active {
@@ -109,6 +117,103 @@
 .dsp-content {
   flex: 1;
   overflow-y: auto;
+}
+
+/* Banners overlaid on data states (paused, stale, schema errors, info) */
+.dsp-banner {
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
+.dsp-banner-paused {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.dsp-banner-stale {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--color-text-secondary);
+}
+
+.dsp-banner-error {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.dsp-banner-info {
+  color: var(--color-text-secondary);
+}
+
+/* Schema-driven diagnostics tabs (protocol v9+/v10) */
+.dsp-schema-tabs {
+  border-bottom: 1px solid var(--color-border);
+  min-height: 36px;
+}
+
+.dsp-schema-tabs .MuiTab-root {
+  min-height: 36px;
+  padding: 6px 12px;
+  font-size: 0.85em;
+  text-transform: none;
+}
+
+.dsp-schema-tabpanel {
+  padding-top: 12px;
+}
+
+.dsp-schema-y-label {
+  font-size: 0.8em;
+  color: var(--color-text-secondary);
+  margin-bottom: 6px;
+}
+
+.dsp-schema-target-note {
+  margin-top: 8px;
+  font-size: 0.8em;
+  color: var(--color-text-secondary);
+}
+
+.dsp-schema-table-outer {
+  overflow-x: auto;
+}
+
+.dsp-schema-table {
+  border-collapse: collapse;
+  font-size: 0.85em;
+  min-width: 280px;
+}
+
+.dsp-schema-table th,
+.dsp-schema-table td {
+  text-align: left;
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--color-border-subtle, rgba(128, 128, 128, 0.2));
+}
+
+.dsp-schema-table th {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+.dsp-schema-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.dsp-value-warning {
+  color: #f59e0b;
+}
+
+.dsp-value-critical {
+  color: #ef4444;
+}
+
+.dsp-ownership-explainer .dsp-recheck-btn {
+  margin-top: 12px;
 }
 
 .dsp-stats-grid {
@@ -263,4 +368,23 @@
   text-align: center;
   color: var(--color-text-secondary);
   font-style: italic;
+}
+
+.dsp-recovery {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border, rgba(128, 128, 128, 0.3));
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.dsp-recovery-message {
+  margin-bottom: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.dsp-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }

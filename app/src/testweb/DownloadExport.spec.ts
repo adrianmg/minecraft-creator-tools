@@ -1,31 +1,49 @@
 import { test, expect, ConsoleMessage } from "@playwright/test";
 import { promises as fs } from "fs";
 import path from "path";
-import { preferBrowserStorageInProjectDialog, processMessage, selectEditMode } from "./WebTestUtilities";
+import {
+  fillRequiredProjectDialogFields,
+  preferBrowserStorageInProjectDialog,
+  processMessage,
+  selectEditMode,
+  waitForEditorReady,
+} from "./WebTestUtilities";
 
 test.describe("MCTools Web Editor - Download and Export Tests @focused", () => {
   const consoleErrors: { url: string; error: string }[] = [];
   const consoleWarnings: { url: string; error: string }[] = [];
 
   function getDashboardAddonExportButton(page: Parameters<typeof selectEditMode>[0]) {
-    return page.locator("button").filter({ hasText: /Install in Minecraft \(\.mcaddon\)/i }).first();
+    return page
+      .locator("button")
+      .filter({ hasText: /Install in Minecraft \(\.mcaddon\)/i })
+      .first();
   }
 
   function getDashboardFolderExportButton(page: Parameters<typeof selectEditMode>[0]) {
-    return page.locator("button").filter({ hasText: /Save project files to a folder/i }).first();
+    return page
+      .locator("button")
+      .filter({ hasText: /Save project files to a folder/i })
+      .first();
   }
 
   function getDashboardFlatWorldButton(page: Parameters<typeof selectEditMode>[0]) {
-    return page.locator("button").filter({ hasText: /flat test world/i }).first();
+    return page
+      .locator("button")
+      .filter({ hasText: /flat test world/i })
+      .first();
   }
 
   function getDashboardProjectWorldButton(page: Parameters<typeof selectEditMode>[0]) {
-    return page.locator("button").filter({ hasText: /regular project world/i }).first();
+    return page
+      .locator("button")
+      .filter({ hasText: /regular project world/i })
+      .first();
   }
 
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
-    await page.waitForLoadState("networkidle");
+    await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
 
     page.on("console", (msg: ConsoleMessage) => {
       processMessage(msg, page, consoleErrors, consoleWarnings);
@@ -68,19 +86,18 @@ test.describe("MCTools Web Editor - Download and Export Tests @focused", () => {
 
       // Click to create project
       await addOnStarterNewButton.click();
-      await page.waitForTimeout(1000);
+      await expect(page.locator(".MuiDialog-root, dialog, [role='dialog']").first()).toBeVisible({ timeout: 5000 });
 
       // Handle project creation dialog
       const okButton = await page.getByTestId("submit-button").first();
       if ((await okButton.count()) > 0) {
         await preferBrowserStorageInProjectDialog(page);
+        await fillRequiredProjectDialogFields(page);
         await okButton.click();
-        await page.waitForTimeout(9000);
-        await page.waitForLoadState("networkidle");
-        await page.waitForTimeout(1000);
+        expect(await waitForEditorReady(page, 60000)).toBe(true);
 
         // Select Focused mode to dismiss welcome panel and hide Inspector
-        await selectEditMode(page);
+        expect(await selectEditMode(page)).toBe(true);
 
         // Verify we're in the editor
         const editorToolbar = page.locator("button:has-text('Save')").or(page.locator("button:has-text('View')"));
@@ -129,11 +146,10 @@ test.describe("MCTools Web Editor - Download and Export Tests @focused", () => {
       const okButton = await page.getByTestId("submit-button").first();
       await preferBrowserStorageInProjectDialog(page);
       await okButton.click();
-      await page.waitForTimeout(2000);
-      await page.waitForLoadState("networkidle");
+      expect(await waitForEditorReady(page, 60000)).toBe(true);
 
       // Select Focused mode to dismiss welcome panel and hide Inspector
-      await selectEditMode(page);
+      expect(await selectEditMode(page)).toBe(true);
 
       await page.screenshot({ path: "debugoutput/screenshots/editor-download-context.png", fullPage: true });
     }

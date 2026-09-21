@@ -17,6 +17,9 @@ export default class LevelKeyValue {
   previousKey: LevelKeyValue | undefined;
   keyCached: string | undefined;
   fullBytesCached: Uint8Array | undefined;
+  internalKeyBytes: Uint8Array | undefined;
+  isDeleted = false;
+  sequenceNumber = 0n;
 
   public get unsharedKey(): string | undefined {
     if (this.unsharedKeyBytes === undefined) {
@@ -37,19 +40,13 @@ export default class LevelKeyValue {
       return this.keyCached;
     }
 
-    const previous = this.previousKey;
-    let key = "";
-
-    if (previous !== undefined) {
-      key = previous.key.substring(0, this.sharedByteLength);
+    const bytes = this.keyBytes;
+    if (!bytes) {
+      return "";
     }
 
-    const ukey = this.unsharedKey;
-
-    if (ukey !== undefined) {
-      key += ukey;
-    }
-
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const key = Utilities.getAsciiString(view, 0, view.byteLength);
     this.keyCached = key;
 
     return key;
@@ -116,10 +113,26 @@ export default class LevelKeyValue {
     this.fileBytes = undefined;
     this.unsharedKeyBytes = undefined;
     this.fullBytesCached = undefined;
+    this.internalKeyBytes = undefined;
     this.previousKey = undefined;
   }
 
-  public loadFromLdb(incomingBytes: Uint8Array, startingIndex: number, prevKey: LevelKeyValue | undefined) {
+  private static _readBoundedVarint(incomingBytes: Uint8Array, index: number, endIndex: number): Varint {
+    for (let cursor = index; cursor < endIndex && cursor - index < 10; cursor++) {
+      if ((incomingBytes[cursor] & 0x80) === 0) {
+        return new Varint(incomingBytes, index);
+      }
+    }
+
+    throw new Error("LevelDB entry contains an incomplete or oversized varint");
+  }
+
+  public loadFromLdb(
+    incomingBytes: Uint8Array,
+    startingIndex: number,
+    prevKey: LevelKeyValue | undefined,
+    entryEndIndex: number = incomingBytes.length
+  ) {
     // IMPORTANT MEMORY NOTE
     // ---------------------
     // We intentionally do NOT store `incomingBytes` on `this.fileBytes` (and
@@ -142,7 +155,7 @@ export default class LevelKeyValue {
 
     let i = 0;
 
-    const sharedBytes = new Varint(incomingBytes, startingIndex);
+    const sharedBytes = LevelKeyValue._readBoundedVarint(incomingBytes, startingIndex, entryEndIndex);
     this.sharedByteLength = sharedBytes.value;
     i += sharedBytes.byteLength;
 
@@ -150,25 +163,69 @@ export default class LevelKeyValue {
       this.previousKey = prevKey;
     }
 
-    const unsharedBytes = new Varint(incomingBytes, startingIndex + i);
+    const unsharedBytes = LevelKeyValue._readBoundedVarint(incomingBytes, startingIndex + i, entryEndIndex);
     i += unsharedBytes.byteLength;
 
-    const valueLength = new Varint(incomingBytes, startingIndex + i);
+    const valueLength = LevelKeyValue._readBoundedVarint(incomingBytes, startingIndex + i, entryEndIndex);
     i += valueLength.byteLength;
 
-    // mystery: why is unsharedKeyBytes 8 bytes longer than what we are expecting for keys?
-    // slice() (not subarray) — see top-of-method note.
-    this.unsharedKeyBytes = incomingBytes.slice(startingIndex + i, startingIndex + i + unsharedBytes.value - 8);
+    const internalKeyEnd = startingIndex + i + unsharedBytes.value;
+    if (internalKeyEnd > entryEndIndex) {
+      throw new Error("LevelDB entry key extends beyond the data-entry region");
+    }
 
-    /*const extraBytes = incomingBytes.subarray(
-      startingIndex + i + unsharedBytes.value - 8,
-      startingIndex + i + unsharedBytes.value
-    ); */
+    const unsharedInternalKeyBytes = incomingBytes.slice(
+      startingIndex + i,
+      internalKeyEnd
+    );
+
+    if (this.sharedByteLength > 0) {
+      const previousInternalKeyBytes = prevKey?.internalKeyBytes;
+      if (!previousInternalKeyBytes || this.sharedByteLength > previousInternalKeyBytes.length) {
+        throw new Error("Unexpected shared internal key without a compatible previous key");
+      }
+
+      this.internalKeyBytes = new Uint8Array(this.sharedByteLength + unsharedInternalKeyBytes.length);
+      this.internalKeyBytes.set(previousInternalKeyBytes.subarray(0, this.sharedByteLength), 0);
+      this.internalKeyBytes.set(unsharedInternalKeyBytes, this.sharedByteLength);
+    } else {
+      this.internalKeyBytes = unsharedInternalKeyBytes;
+    }
+
+    if (prevKey) {
+      prevKey.internalKeyBytes = undefined;
+    }
+
+    if (this.internalKeyBytes.length < 8) {
+      throw new Error("LevelDB internal key is missing its sequence and value-type trailer");
+    }
+
+    const trailerOffset = this.internalKeyBytes.length - 8;
+    const valueType = this.internalKeyBytes[trailerOffset];
+    if (valueType !== 0 && valueType !== 1) {
+      throw new Error(`LevelDB internal key has unsupported value type ${valueType}`);
+    }
+    this.isDeleted = valueType === 0;
+
+    let sequenceNumber = 0n;
+    for (let trailerIndex = 7; trailerIndex >= 1; trailerIndex--) {
+      sequenceNumber = (sequenceNumber << 8n) | BigInt(this.internalKeyBytes[trailerOffset + trailerIndex]);
+    }
+    this.sequenceNumber = sequenceNumber;
+
+    this.fullBytesCached = this.internalKeyBytes.slice(0, trailerOffset);
+    this.unsharedKeyBytes = this.fullBytesCached;
+    this.previousKey = undefined;
 
     i += unsharedBytes.value;
 
+    const valueEnd = startingIndex + i + valueLength.value;
+    if (valueEnd > entryEndIndex) {
+      throw new Error("LevelDB entry value extends beyond the data-entry region");
+    }
+
     // slice() (not subarray) — see top-of-method note.
-    this.value = incomingBytes.slice(startingIndex + i, startingIndex + i + valueLength.value);
+    this.value = incomingBytes.slice(startingIndex + i, valueEnd);
     i += valueLength.value;
 
     /*    this.restarts = [];

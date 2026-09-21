@@ -225,6 +225,11 @@ export default class ProjectAutogeneration {
       const vscodelaunch = await VsCodeLaunchDefinition.ensureOnFile(item.primaryFile);
 
       if (vscodelaunch) {
+        // Attach the project BEFORE reconciliation, matching the setup and
+        // deploy paths: without it getExpectedScriptModuleUuid() returns
+        // undefined, so a managed launch profile missing targetModuleUuid is
+        // treated as complete and can keep attaching to the wrong pack.
+        vscodelaunch.project = item.project;
         await vscodelaunch.ensureMinContent();
         await vscodelaunch.save();
       }

@@ -9,6 +9,8 @@ import Project from "../../../app/Project";
 import ProjectItem from "../../../app/ProjectItem";
 import Database from "../../../minecraft/Database";
 import ContentIndex from "../../../core/ContentIndex";
+import { CheckVanillaDuplicatesValidationRules } from "./CheckVanillaDuplicatesInfoGeneratorData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export enum CheckVanillaDuplicatesInfoGeneratorTest {
   completeVanillaCopy = 101,
@@ -45,9 +47,11 @@ const RESOURCE_PACK_SUFFIX = "Vanilla files can be seen at https://aka.ms/resour
  * @see {@link ../../../public/data/forms/mctoolsval/vandupes.form.json} for topic definitions
  */
 
-export default class CheckVanillaDuplicatesInfoGenerator implements IProjectInfoGenerator {
+export default class CheckVanillaDuplicatesInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "VANDUPES";
   title = "Vanilla Duplicates";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = CheckVanillaDuplicatesValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {
     info.completeVanillaCopy = infoSet.getSummedDataValue(

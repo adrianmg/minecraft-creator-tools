@@ -9,10 +9,12 @@ import Project from "../../../app/Project";
 import StorageUtilities from "../../../storage/StorageUtilities";
 import {
   CheckFeatureDeprecationInfoGeneratorTest,
+  CheckFeatureDeprecationValidationRules,
   DEPRECATED_BLOCKS,
   DEPRECATED_TEXTURES,
   DEPRECATED_TEXTURE_ENTRIES,
 } from "./CheckFeatureDeprecationInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 /***********
  * Generator for Checking Feature Deprecation
@@ -25,9 +27,23 @@ import {
  * @see {@link ../../../../public/data/forms/mctoolsval/checkfeaturedeprecation.form.json} for topic definitions
  */
 
-export default class CheckFeatureDeprecationInfoGenerator implements IProjectInfoGenerator {
+/**
+ * True when a pack-relative texture path sits directly in the canonical
+ * textures/blocks folder of the pack root or of a subpack root — the only
+ * locations Minecraft reads vanilla block-texture overrides from.
+ */
+function isCanonicalBlocksTexturePath(packRelativePath: string) {
+  const normalized = packRelativePath.replace(/\\/g, "/").toLowerCase();
+  const folderPath = normalized.substring(0, normalized.lastIndexOf("/") + 1);
+
+  return folderPath === "/textures/blocks/" || /^\/subpacks\/[^/]+\/textures\/blocks\/$/.test(folderPath);
+}
+
+export default class CheckFeatureDeprecationInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "CHECKFEATUREDEPRECATION";
   title = "Feature Deprecation";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = CheckFeatureDeprecationValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {
     info.deprecatedBlockOverride = infoSet.getSummedDataValue(
@@ -149,8 +165,18 @@ export default class CheckFeatureDeprecationInfoGenerator implements IProjectInf
         }
       }
 
-      if (item.getFolder()?.name === "blocks") {
-        if (DEPRECATED_TEXTURES.includes(item.name)) {
+      if (DEPRECATED_TEXTURES.includes(item.name)) {
+        if (!item.isContentLoaded) {
+          await item.loadContent();
+        }
+
+        // Only textures at the canonical pack- or subpack-relative
+        // textures/blocks location override vanilla block textures; a custom
+        // texture whose parent folder merely happens to be named "blocks"
+        // (e.g. textures/harness/blocks/) does not.
+        const packRelativePath = await item.getPackRelativePath();
+
+        if (packRelativePath && isCanonicalBlocksTexturePath(packRelativePath)) {
           items.push(
             new ProjectInfoItem(
               InfoItemType.warning,

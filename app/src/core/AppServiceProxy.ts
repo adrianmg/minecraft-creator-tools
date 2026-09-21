@@ -43,6 +43,11 @@ export enum AppServiceProxyCommands {
   debugResume = "debugResume",
   debugStartProfiler = "debugStartProfiler",
   debugStopProfiler = "debugStopProfiler",
+  debugRetryConnection = "debugRetryConnection",
+  getDebugDiagnostics = "getDebugDiagnostics",
+  getDebugStatus = "getDebugStatus",
+  debugReattach = "debugReattach",
+  getDedicatedServerDebugStatus = "getDedicatedServerDebugStatus",
   shellRecycleItem = "shellRecycleItem",
   reloadMct = "reloadMct",
   getContentSources = "getContentSources",
@@ -320,6 +325,14 @@ export default class AppServiceProxy {
           if (index >= 0) {
             const promiseResolver = AppServiceProxy._pendingStringPromiseResolvers[index];
 
+            // A completion this proxy did not originate (another requester on
+            // the same bridge, or a duplicate) must be ignored, not thrown on:
+            // 'appsvc' is a shared EventEmitter channel, and an exception here
+            // aborts the dispatch and starves every later listener.
+            if (typeof promiseResolver !== "function") {
+              return;
+            }
+
             // NOTE: Since logging goes from browser to client and then async is complete,
             // DO NOT log inside of here or otherwise you may cause a loop.
 
@@ -340,6 +353,12 @@ export default class AppServiceProxy {
 
           if (index >= 0) {
             const promiseResolver = AppServiceProxy._pendingArrayBufferPromiseResolvers[index];
+
+            // See the string-completion guard above: unknown completions must
+            // not abort the shared 'appsvc' dispatch.
+            if (typeof promiseResolver !== "function") {
+              return;
+            }
 
             // NOTE: Since logging goes from browser to client and then async is complete,
             // DO NOT log inside of here or otherwise you may cause a loop.

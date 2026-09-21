@@ -11,13 +11,10 @@ import Project from "../../../app/Project";
 import { SoundDefinitionCatalogSchema } from "../../../minecraft/ISoundDefinitionCatalog";
 import { ZodIssueCode } from "zod";
 import StorageUtilities from "../../../storage/StorageUtilities";
+import { SoundDefinitionsValidationRules, SoundsDefinitionInfoGeneratorTest } from "./SoundDefinitionsInfoGeneratorData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
-export enum SoundsDefinitionInfoGeneratorTest {
-  multipleSoundsDefinitionManifests = 101,
-  invalidSoundsDefinitionManifest = 102,
-  soundsDefinitionManifestInvalidJson = 103,
-  foundALooseSoundDefinition = 104,
-}
+export { SoundsDefinitionInfoGeneratorTest };
 
 /***********
  * Generator for validating Sounds Definition Manifest Files
@@ -30,9 +27,11 @@ export enum SoundsDefinitionInfoGeneratorTest {
  * @see {@link ../../../public/data/forms/mctoolsval/sndsdef.form.json} for topic definitions
  */
 
-export default class SoundsDefinitionInfoGenerator implements IProjectInfoGenerator {
+export default class SoundsDefinitionInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "SNDSDEF";
   title = "Sound Definitions";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = SoundDefinitionsValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {
     info.multipleSoundsManifests = infoSet.getSummedDataValue(

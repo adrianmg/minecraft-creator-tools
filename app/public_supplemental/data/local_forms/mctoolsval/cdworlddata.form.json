@@ -39,6 +39,22 @@
       "dataType": "string",
       "description": "The DimensionNameIdTable contains name-ID mappings for dimensions that have no corresponding chunk data in the LevelDB. May indicate incomplete cleanup or leftover development data.",
       "technicalDescription": "Data contains the dimension name. Content field contains the dimension ID."
+    },
+    {
+      "id": "104",
+      "title": "Custom Dimension Count",
+      "messageType": "info",
+      "dataType": "number",
+      "description": "The number of distinct custom dimensions with persisted LevelDB chunk data.",
+      "technicalDescription": "Data contains the custom dimension count for this world."
+    },
+    {
+      "id": "105",
+      "title": "Custom Dimension Chunk Count",
+      "messageType": "info",
+      "dataType": "number",
+      "description": "The total number of unique LevelDB chunks stored across custom dimensions.",
+      "technicalDescription": "Data contains the custom dimension chunk count for this world."
     }
   ]
 }

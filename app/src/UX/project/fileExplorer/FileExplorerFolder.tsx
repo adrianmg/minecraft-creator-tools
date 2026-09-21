@@ -43,13 +43,13 @@ export default class FileExplorerFolder extends Component<IFileExplorerFolderPro
 
   componentDidMount(): void {
     this.loadFolder();
-    if (this.state.isExpanded && this.props.onExpandedChange) {
+    if (this.state.isExpanded && this.props.onExpandedChange && this.props.depth > 0) {
       this.props.onExpandedChange(1);
     }
   }
 
   componentWillUnmount(): void {
-    if (this.state.isExpanded && this.props.onExpandedChange) {
+    if (this.state.isExpanded && this.props.onExpandedChange && this.props.depth > 0) {
       this.props.onExpandedChange(-1);
     }
   }
@@ -62,14 +62,21 @@ export default class FileExplorerFolder extends Component<IFileExplorerFolderPro
       this.loadFolder();
     }
 
-    if (
-      prevProps.collapseAllToken !== this.props.collapseAllToken &&
-      this.props.collapseAllToken !== undefined &&
-      this.state.isExpanded
-    ) {
-      this.setState({ isExpanded: false });
-      if (this.props.onExpandedChange) {
-        this.props.onExpandedChange(-1);
+    if (prevProps.collapseAllToken !== this.props.collapseAllToken && this.props.collapseAllToken !== undefined) {
+      // Keep the root node visible so the user still sees the top-level project folders
+      // while nested branches collapse in response to the global reset signal.
+      if (this.props.depth === 0) {
+        if (!this.state.isExpanded) {
+          this.setState({ isExpanded: true });
+        }
+        return;
+      }
+
+      if (this.state.isExpanded) {
+        this.setState({ isExpanded: false });
+        if (this.props.onExpandedChange) {
+          this.props.onExpandedChange(-1);
+        }
       }
     }
   }
@@ -80,7 +87,7 @@ export default class FileExplorerFolder extends Component<IFileExplorerFolderPro
       loadedExtendedPath: this.state.loadedExtendedPath,
       isExpanded: newExpandedValue,
     });
-    if (previous !== newExpandedValue && this.props.onExpandedChange) {
+    if (previous !== newExpandedValue && this.props.onExpandedChange && this.props.depth > 0) {
       this.props.onExpandedChange(newExpandedValue ? 1 : -1);
     }
   }

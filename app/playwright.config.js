@@ -18,7 +18,7 @@ export default defineConfig({
 
   // Exclude ServerUI tests - they require a running MCT server and have their own config
   // Run ServerUI tests separately with: npm run test-server-ui
-  testIgnore: ["**/ServerUI.spec.ts"],
+  testIgnore: ["**/ServerUI.spec.ts", "**/ServerApi.spec.ts"],
 
   outputDir: "./debugoutput/playwright-test-results",
 

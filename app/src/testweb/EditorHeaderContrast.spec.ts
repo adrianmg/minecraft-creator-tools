@@ -95,10 +95,9 @@ async function selectEntityType(page: Page, entityName: string): Promise<boolean
 /** Create a Full Add-On (has entities) in the given theme and open an entity editor. */
 async function openEntityEditor(page: Page, theme: ThemeMode): Promise<boolean> {
   await gotoWithTheme(page, theme, "/");
-  await page.waitForTimeout(500);
 
   if (!(await clickTemplateCreateButton(page, "addonFull"))) return false;
-  await page.waitForTimeout(1000);
+  await page.locator(".MuiDialog-root, dialog, [role='dialog']").first().waitFor({ state: "visible", timeout: 5000 });
   await preferBrowserStorageInProjectDialog(page);
   await fillRequiredProjectDialogFields(page);
 
@@ -109,8 +108,7 @@ async function openEntityEditor(page: Page, theme: ThemeMode): Promise<boolean> 
     await page.keyboard.press("Enter");
   }
 
-  await page.waitForTimeout(3000);
-  if (!(await waitForEditorReady(page, 25000))) return false;
+  if (!(await waitForEditorReady(page, 60000))) return false;
   await selectEditMode(page, "full").catch(() => {});
 
   if (await selectEntityType(page, "biceson")) return true;

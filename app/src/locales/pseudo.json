@@ -1441,6 +1441,8 @@
   "world_settings.backup_5min": "⟦Every 5 minutes⟧",
   "world_settings.backup_2min": "⟦Every 2 minutes⟧",
   "project_editor.image_mgr.edit_image": "⟦Edit image⟧",
+  "project_editor.image_mgr.preview": "⟦Preview⟧",
+  "project_editor.image_mgr.preview_image": "⟦Preview image⟧",
   "project_editor.image_mgr.no_content": "⟦Image does not have content.⟧",
   "project_editor.audio.toggle_edit": "⟦Toggle edit mode⟧",
   "project_editor.audio.pause": "⟦Pause playback⟧",

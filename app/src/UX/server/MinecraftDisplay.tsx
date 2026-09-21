@@ -1093,6 +1093,8 @@ class MinecraftDisplay extends Component<IMinecraftDisplayProps, IMinecraftDispl
                     slot={httpStorage?.slot}
                     storage={httpStorage}
                     minecraft={processHostedMc}
+                    onViewLogs={() => this.setState({ sidebarTab: SidebarTab.messages })}
+                    onChangeSettings={this._openSlotSettings}
                   />
                 </div>
               );
@@ -1216,6 +1218,8 @@ class MinecraftDisplay extends Component<IMinecraftDisplayProps, IMinecraftDispl
                       slot={httpStorage?.slot}
                       storage={httpStorage}
                       minecraft={processHostedMc}
+                      onViewLogs={() => this.setState({ minecraftStatus: ProjectStatusAreaMode.expanded })}
+                      onChangeSettings={this._openSlotSettings}
                     />
                   </div>
                 )}
@@ -1332,6 +1336,8 @@ class MinecraftDisplay extends Component<IMinecraftDisplayProps, IMinecraftDispl
                     slot={httpStorage?.slot}
                     storage={httpStorage}
                     minecraft={processHostedMc}
+                    onViewLogs={() => this.setState({ minecraftStatus: ProjectStatusAreaMode.expanded })}
+                    onChangeSettings={this._openSlotSettings}
                   />
                 </div>
               )}

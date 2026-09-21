@@ -4,6 +4,9 @@
 import { assert } from "chai";
 import { deflateRawSync, deflateSync } from "zlib";
 import LevelDb, { ILevelDbParsedRecord } from "../minecraft/LevelDb";
+import LevelKeyValue from "../minecraft/LevelKeyValue";
+import MCWorld from "../minecraft/MCWorld";
+import Varint from "../minecraft/Varint";
 import WorldDataMetricsReducer from "../minecraft/WorldDataMetricsReducer";
 import IFile from "../storage/IFile";
 
@@ -23,8 +26,16 @@ function fixed32(value: number): number[] {
   return [value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff];
 }
 
-function fixed64Zero(): number[] {
-  return [0, 0, 0, 0, 0, 0, 0, 0];
+function fixed64(value: number): number[] {
+  const bytes = new Array<number>(8).fill(0);
+  let remainingValue = value;
+
+  for (let index = 0; index < bytes.length; index++) {
+    bytes[index] = remainingValue & 0xff;
+    remainingValue = Math.floor(remainingValue / 0x100);
+  }
+
+  return bytes;
 }
 
 function bytesFromString(value: string): number[] {
@@ -37,9 +48,48 @@ function stringFromBytes(bytes: Uint8Array): string {
     .join("");
 }
 
-function makeLdbRecord(userKey: number[], value: number[]): number[] {
-  const internalKey = [...userKey, 1, 0, 0, 0, 0, 0, 0, 0];
+function makeLdbRecord(
+  userKey: number[],
+  value: number[],
+  sequence = 0,
+  deleted = false,
+  valueType = deleted ? 0 : 1
+): number[] {
+  const internalKeyTrailer = new Array<number>(8).fill(0);
+  internalKeyTrailer[0] = valueType;
+
+  let remainingSequence = sequence;
+  for (let index = 1; index < internalKeyTrailer.length; index++) {
+    internalKeyTrailer[index] = remainingSequence & 0xff;
+    remainingSequence = Math.floor(remainingSequence / 0x100);
+  }
+
+  const internalKey = [...userKey, ...internalKeyTrailer];
   return [0, ...varint(internalKey.length), ...varint(value.length), ...internalKey, ...value];
+}
+
+function makePrefixCompressedLdbRecord(
+  sharedByteLength: number,
+  userKey: number[],
+  value: number[],
+  sequence = 0
+): number[] {
+  const fullRecord = makeLdbRecord(userKey, value, sequence);
+  const sharedLengthBytes = varint(0).length;
+  const unsharedLength = new Varint(new Uint8Array(fullRecord), sharedLengthBytes).value;
+  const valueLengthOffset = sharedLengthBytes + varint(unsharedLength).length;
+  const valueLength = new Varint(new Uint8Array(fullRecord), valueLengthOffset);
+  const internalKeyOffset = valueLengthOffset + valueLength.byteLength;
+  const internalKey = fullRecord.slice(internalKeyOffset, internalKeyOffset + unsharedLength);
+  const unsharedInternalKey = internalKey.slice(sharedByteLength);
+
+  return [
+    ...varint(sharedByteLength),
+    ...varint(unsharedInternalKey.length),
+    ...varint(value.length),
+    ...unsharedInternalKey,
+    ...value,
+  ];
 }
 
 function makeLdbBlock(records: number[][]): Uint8Array {
@@ -88,8 +138,52 @@ function makeLdbFile(records: number[][], compressionMode: LdbCompressionMode = 
   return file;
 }
 
-function makeLogFile(entries: { key: number[]; value?: number[]; deleted?: boolean }[]): Uint8Array {
-  const batch: number[] = [...fixed64Zero(), ...fixed32(entries.length)];
+function makeMultiBlockLdbFile(
+  blocks: Array<{ records: number[][]; lastUserKey: number[]; lastSequence: number }>
+): Uint8Array {
+  const dataBlocks = blocks.map((block) => makeLdbBlock(block.records));
+  const metaBlock = new Uint8Array([0]);
+  let blockOffset = 0;
+  const indexRecords: number[][] = [];
+
+  for (let index = 0; index < blocks.length; index++) {
+    const dataBlock = dataBlocks[index];
+    const indexValue = [...varint(blockOffset), ...varint(dataBlock.length)];
+    indexRecords.push(makeLdbRecord(blocks[index].lastUserKey, indexValue, blocks[index].lastSequence));
+    blockOffset += dataBlock.length;
+  }
+
+  const indexBlock = makeLdbBlock(indexRecords);
+  const indexOffset = blockOffset + metaBlock.length;
+  const footer = new Uint8Array(48);
+  const footerPrefix = [
+    ...varint(blockOffset),
+    ...varint(metaBlock.length),
+    ...varint(indexOffset),
+    ...varint(indexBlock.length),
+  ];
+
+  footer.set(footerPrefix, 0);
+  footer.set([87, 251, 128, 139, 36, 117, 71, 219], 40);
+
+  const file = new Uint8Array(blockOffset + metaBlock.length + indexBlock.length + footer.length);
+  let writeOffset = 0;
+  for (const dataBlock of dataBlocks) {
+    file.set(dataBlock, writeOffset);
+    writeOffset += dataBlock.length;
+  }
+  file.set(metaBlock, blockOffset);
+  file.set(indexBlock, indexOffset);
+  file.set(footer, indexOffset + indexBlock.length);
+
+  return file;
+}
+
+function makeLogFile(
+  entries: { key: number[]; value?: number[]; deleted?: boolean }[],
+  startSequence = 0
+): Uint8Array {
+  const batch: number[] = [...fixed64(startSequence), ...fixed32(entries.length)];
 
   for (const entry of entries) {
     batch.push(entry.deleted ? 0 : 1, ...varint(entry.key.length), ...entry.key);
@@ -101,6 +195,16 @@ function makeLogFile(entries: { key: number[]; value?: number[]; deleted?: boole
   }
 
   return new Uint8Array([...fixed32(0), batch.length & 0xff, (batch.length >>> 8) & 0xff, 1, ...batch]);
+}
+
+function makeLogPhysicalRecord(payload: number[]): Uint8Array {
+  return new Uint8Array([
+    ...fixed32(0),
+    payload.length & 0xff,
+    (payload.length >>> 8) & 0xff,
+    1,
+    ...payload,
+  ]);
 }
 
 function makeFile(name: string, content: Uint8Array): IFile {
@@ -189,6 +293,7 @@ describe("LevelDb.forEachRecord", () => {
     );
     assert.deepEqual(Array.from(records[0].keyBytes), bytesFromString("alpha"));
     assert.deepEqual(Array.from(records[0].value ?? []), [1, 2, 3]);
+    assert.doesNotThrow(() => JSON.stringify(records));
     assert.strictEqual(levelDb.keys.size, 0);
   });
 
@@ -266,6 +371,367 @@ describe("LevelDb.forEachRecord", () => {
     assert.deepEqual(Array.from((value && typeof value !== "boolean" ? value.value : undefined) ?? []), [13, 14]);
   });
 
+  it("releases prefix-compression links after reconstructing SST keys", async () => {
+    const firstKey = bytesFromString("prefix-a");
+    const secondKey = bytesFromString("prefix-b");
+    const ldb = makeLdbFile([
+      makeLdbRecord(firstKey, [1], 2),
+      makePrefixCompressedLdbRecord(7, secondKey, [2], 1),
+      makeLdbRecord(bytesFromString("restart-z"), [3], 0),
+    ]);
+    const levelDb = new LevelDb([makeFile("000001.ldb", ldb)], [], [], "test");
+
+    await levelDb.init();
+
+    const first = levelDb.keys.get("prefix-a");
+    const second = levelDb.keys.get("prefix-b");
+    const restart = levelDb.keys.get("restart-z");
+    assert.isOk(first && typeof first !== "boolean");
+    assert.isOk(second && typeof second !== "boolean");
+    assert.isOk(restart && typeof restart !== "boolean");
+    assert.isUndefined(first && typeof first !== "boolean" ? first.previousKey : undefined);
+    assert.isUndefined(second && typeof second !== "boolean" ? second.previousKey : undefined);
+    assert.isUndefined(first && typeof first !== "boolean" ? first.internalKeyBytes : undefined);
+    assert.isUndefined(second && typeof second !== "boolean" ? second.internalKeyBytes : undefined);
+    assert.isUndefined(restart && typeof restart !== "boolean" ? restart.internalKeyBytes : undefined);
+  });
+
+  it("preserves compacted LDB tombstones over older values", async () => {
+    const keyBytes = Array.from(chunkKey(1, 2, 44, 1000));
+    const ldb = makeLdbFile([
+      makeLdbRecord(keyBytes, [], 2, true),
+      makeLdbRecord(keyBytes, [7], 1),
+    ]);
+    const visitorDb = new LevelDb([makeFile("000001.ldb", ldb)], [], [], "test");
+    const initDb = new LevelDb([makeFile("000001.ldb", ldb)], [], [], "test");
+    const records: ILevelDbParsedRecord[] = [];
+
+    await visitorDb.forEachRecord((record) => records.push(record), {
+      includeValues: true,
+      includeDeleted: true,
+    });
+    await initDb.init();
+
+    assert.strictEqual(records.length, 1);
+    assert.isTrue(records[0].isDeleted);
+    assert.strictEqual(WorldDataMetricsReducer.getMetricsForRecords(records).customDimensionChunkCount, 0);
+    assert.strictEqual(initDb.keys.get(stringFromBytes(new Uint8Array(keyBytes))), false);
+  });
+
+  it("preserves the newest compacted version when one user key spans data blocks", async () => {
+    const keyBytes = Array.from(chunkKey(1, 2, 44, 1000));
+    const ldb = makeMultiBlockLdbFile([
+      {
+        records: [makeLdbRecord(keyBytes, [], 3, true)],
+        lastUserKey: keyBytes,
+        lastSequence: 3,
+      },
+      {
+        records: [makeLdbRecord(keyBytes, [8], 2)],
+        lastUserKey: keyBytes,
+        lastSequence: 2,
+      },
+      {
+        records: [makeLdbRecord(keyBytes, [7], 1)],
+        lastUserKey: keyBytes,
+        lastSequence: 1,
+      },
+    ]);
+    const visitorDb = new LevelDb([makeFile("000001.ldb", ldb)], [], [], "test");
+    const initDb = new LevelDb([makeFile("000001.ldb", ldb)], [], [], "test");
+    const records: ILevelDbParsedRecord[] = [];
+
+    await visitorDb.forEachRecord((record) => records.push(record), {
+      includeValues: true,
+      includeDeleted: true,
+    });
+    await initDb.init();
+
+    assert.strictEqual(records.length, 1);
+    assert.isTrue(records[0].isDeleted);
+    assert.strictEqual(WorldDataMetricsReducer.getMetricsForRecords(records).customDimensionChunkCount, 0);
+    assert.strictEqual(initDb.keys.get(stringFromBytes(new Uint8Array(keyBytes))), false);
+  });
+
+  it("preserves the newest compacted version when one user key spans SST files", async () => {
+    const keyBytes = Array.from(chunkKey(1, 2, 44, 1000));
+    const newestTombstone = makeLdbFile([makeLdbRecord(keyBytes, [], 3, true)]);
+    const olderValue = makeLdbFile([makeLdbRecord(keyBytes, [7], 2)]);
+    const visitorDb = new LevelDb(
+      [makeFile("000001.ldb", newestTombstone), makeFile("000002.ldb", olderValue)],
+      [],
+      [],
+      "test"
+    );
+    const initDb = new LevelDb(
+      [makeFile("000001.ldb", newestTombstone), makeFile("000002.ldb", olderValue)],
+      [],
+      [],
+      "test"
+    );
+    const records: ILevelDbParsedRecord[] = [];
+
+    await visitorDb.forEachRecord((record) => records.push(record), {
+      includeValues: true,
+      includeDeleted: true,
+    });
+    await initDb.init();
+
+    assert.strictEqual(records.length, 2);
+    assert.strictEqual(WorldDataMetricsReducer.getMetricsForRecords(records).customDimensionChunkCount, 0);
+    assert.strictEqual(initDb.keys.get(stringFromBytes(new Uint8Array(keyBytes))), false);
+  });
+
+  it("does not replace a newer LOG value with an older incremental SST value", async () => {
+    const keyBytes = Array.from(chunkKey(1, 2, 44, 1000));
+    const initialLdb = makeLdbFile([makeLdbRecord(keyBytes, [1], 1)]);
+    const newerLog = makeLogFile([{ key: keyBytes, value: [9] }], 3);
+    const olderIncrementalLdb = makeLdbFile([makeLdbRecord(keyBytes, [2], 2)]);
+    const levelDb = new LevelDb(
+      [makeFile("000001.ldb", initialLdb)],
+      [makeFile("000002.log", newerLog)],
+      [],
+      "test"
+    );
+
+    await levelDb.init();
+    await levelDb.parseIncrementalFile(makeFile("000003.ldb", olderIncrementalLdb));
+
+    const value = levelDb.keys.get(stringFromBytes(new Uint8Array(keyBytes)));
+    assert.isOk(value && typeof value !== "boolean");
+    assert.deepEqual(Array.from((value && typeof value !== "boolean" ? value.value : undefined) ?? []), [9]);
+  });
+
+  it("does not replace a newer SST value with an older incremental SST value", async () => {
+    const keyBytes = Array.from(chunkKey(1, 2, 44, 1000));
+    const newerSst = makeLdbFile([makeLdbRecord(keyBytes, [9], 3)]);
+    const olderIncrementalSst = makeLdbFile([makeLdbRecord(keyBytes, [2], 2)]);
+    const levelDb = new LevelDb([makeFile("000001.ldb", newerSst)], [], [], "test");
+
+    await levelDb.init();
+    await levelDb.parseIncrementalFile(makeFile("000002.ldb", olderIncrementalSst));
+
+    const value = levelDb.keys.get(stringFromBytes(new Uint8Array(keyBytes)));
+    assert.isOk(value && typeof value !== "boolean");
+    assert.deepEqual(Array.from((value && typeof value !== "boolean" ? value.value : undefined) ?? []), [9]);
+  });
+
+  it("allows an equal-sequence SST record to repopulate an evicted key", async () => {
+    const keyBytes = Array.from(chunkKey(1, 2, 44, 1000));
+    const sst = makeLdbFile([makeLdbRecord(keyBytes, [9], 3)]);
+    const levelDb = new LevelDb([makeFile("000001.ldb", sst)], [], [], "test");
+
+    await levelDb.init();
+    levelDb.clearLoadedKeys(false);
+    levelDb.parseLdbContent(sst, "test");
+
+    const value = levelDb.keys.get(stringFromBytes(new Uint8Array(keyBytes)));
+    assert.isOk(value && typeof value !== "boolean");
+    assert.deepEqual(Array.from((value && typeof value !== "boolean" ? value.value : undefined) ?? []), [9]);
+  });
+
+  it("reports a chunk affected by an incremental SST tombstone", async () => {
+    const keyBytes = Array.from(chunkKey(1, 2, 44));
+    const initialLdb = makeLdbFile([makeLdbRecord(keyBytes, [1], 1)]);
+    const incrementalTombstone = makeLdbFile([makeLdbRecord(keyBytes, [], 2, true)]);
+    const levelDb = new LevelDb([makeFile("000001.ldb", initialLdb)], [], [], "test");
+
+    await levelDb.init();
+    const affectedChunks = await levelDb.parseIncrementalFile(makeFile("000002.ldb", incrementalTombstone));
+
+    assert.deepEqual(affectedChunks, [
+      { x: 1, z: 2, dimension: 0, hasDeletion: true, requiresReload: false },
+    ]);
+    assert.strictEqual(levelDb.keys.get(stringFromBytes(new Uint8Array(keyBytes))), false);
+  });
+
+  it("distinguishes incremental LOG puts from tombstones", async () => {
+    const keyBytes = Array.from(chunkKey(1, 2, 44));
+    const initialLdb = makeLdbFile([makeLdbRecord(keyBytes, [1], 1)]);
+    const levelDb = new LevelDb([makeFile("000001.ldb", initialLdb)], [], [], "test");
+
+    await levelDb.init();
+    const putChunks = await levelDb.parseIncrementalFile(
+      makeFile("000002.log", makeLogFile([{ key: keyBytes, value: [2] }], 2))
+    );
+    const deletedChunks = await levelDb.parseIncrementalFile(
+      makeFile("000003.log", makeLogFile([{ key: keyBytes, deleted: true }], 3))
+    );
+
+    assert.deepEqual(putChunks, [
+      { x: 1, z: 2, dimension: 0, hasDeletion: false, requiresReload: false },
+    ]);
+    assert.deepEqual(deletedChunks, [
+      { x: 1, z: 2, dimension: 0, hasDeletion: true, requiresReload: false },
+    ]);
+  });
+
+  it("reports LOG tombstones after processed key payloads were evicted", async () => {
+    const keyBytes = Array.from(chunkKey(1, 2, 44));
+    const key = stringFromBytes(new Uint8Array(keyBytes));
+    const initialLdb = makeLdbFile([makeLdbRecord(keyBytes, [1], 1)]);
+    const levelDb = new LevelDb([makeFile("000001.ldb", initialLdb)], [], [], "test");
+
+    await levelDb.init();
+    levelDb.deleteKey(key);
+    const affectedChunks = await levelDb.parseIncrementalFile(
+      makeFile("000002.log", makeLogFile([{ key: keyBytes, deleted: true }], 2))
+    );
+
+    assert.deepEqual(affectedChunks, [
+      { x: 1, z: 2, dimension: 0, hasDeletion: true, requiresReload: false },
+    ]);
+  });
+
+  it("marks custom-dimension incremental changes for authoritative reload", async () => {
+    const keyBytes = Array.from(chunkKey(1, 2, 44, 1000));
+    const levelDb = new LevelDb([], [], [], "test");
+
+    const affectedChunks = await levelDb.parseIncrementalFile(
+      makeFile("000001.log", makeLogFile([{ key: keyBytes, value: [1] }], 1))
+    );
+
+    assert.deepEqual(affectedChunks, [
+      { x: 1, z: 2, dimension: 1000, hasDeletion: false, requiresReload: true },
+    ]);
+  });
+
+  it("does not classify named incremental records as custom-dimension chunks", async () => {
+    const namedKey = bytesFromString("map_123456789");
+    const levelDb = new LevelDb([], [], [], "test");
+
+    const affectedChunks = await levelDb.parseIncrementalFile(
+      makeFile("000001.log", makeLogFile([{ key: namedKey, value: [1] }], 1))
+    );
+
+    assert.deepEqual(affectedChunks, []);
+  });
+
+  it("surfaces incremental DimensionNameIdTable changes for metadata reload", async () => {
+    const levelDb = new LevelDb([], [], [], "test");
+
+    const affectedChunks = await levelDb.parseIncrementalFile(
+      makeFile(
+        "000001.log",
+        makeLogFile([{ key: bytesFromString("DimensionNameIdTable"), value: [1] }], 1)
+      )
+    );
+
+    assert.deepEqual(affectedChunks, []);
+    assert.isTrue(levelDb.incrementalMetadataChanged);
+  });
+
+  it("does not replay unchanged custom-dimension LOG records after an append", async () => {
+    const customKey = Array.from(chunkKey(1, 2, 44, 1000));
+    const vanillaKey = Array.from(chunkKey(3, 4, 44));
+    const firstBatch = makeLogFile([{ key: customKey, value: [1] }], 1);
+    const appendedBatch = makeLogFile([{ key: vanillaKey, value: [2] }], 2);
+    const logFile = makeFile("000001.log", firstBatch);
+    const levelDb = new LevelDb([], [], [], "test");
+
+    const firstAffected = await levelDb.parseIncrementalFile(logFile);
+    const grownLog = new Uint8Array(firstBatch.length + appendedBatch.length);
+    grownLog.set(firstBatch, 0);
+    grownLog.set(appendedBatch, firstBatch.length);
+    logFile.content = grownLog;
+    logFile.isContentLoaded = true;
+    const secondAffected = await levelDb.parseIncrementalFile(logFile);
+
+    assert.deepEqual(firstAffected, [
+      { x: 1, z: 2, dimension: 1000, hasDeletion: false, requiresReload: true },
+    ]);
+    assert.deepEqual(secondAffected, [
+      { x: 3, z: 4, dimension: 0, hasDeletion: false, requiresReload: false },
+    ]);
+  });
+
+  it("does not report an evicted historical LOG record as changed after an append", async () => {
+    const customKeyBytes = Array.from(chunkKey(1, 2, 44, 1000));
+    const customKey = stringFromBytes(new Uint8Array(customKeyBytes));
+    const vanillaKey = Array.from(chunkKey(3, 4, 44));
+    const firstBatch = makeLogFile([{ key: customKeyBytes, value: [1] }], 1);
+    const appendedBatch = makeLogFile([{ key: vanillaKey, value: [2] }], 2);
+    const logFile = makeFile("000001.log", firstBatch);
+    const levelDb = new LevelDb([], [], [], "test");
+
+    await levelDb.parseIncrementalFile(logFile);
+    levelDb.deleteKey(customKey);
+    const grownLog = new Uint8Array(firstBatch.length + appendedBatch.length);
+    grownLog.set(firstBatch, 0);
+    grownLog.set(appendedBatch, firstBatch.length);
+    logFile.content = grownLog;
+    logFile.isContentLoaded = true;
+    const affectedChunks = await levelDb.parseIncrementalFile(logFile);
+
+    assert.deepEqual(affectedChunks, [
+      { x: 3, z: 4, dimension: 0, hasDeletion: false, requiresReload: false },
+    ]);
+    assert.isUndefined(levelDb.keys.get(customKey));
+  });
+
+  it("reports truncated LOG WriteBatch headers without throwing", async () => {
+    const levelDb = new LevelDb([], [makeFile("000001.log", makeLogPhysicalRecord([1, 2, 3]))], [], "test");
+    const records: ILevelDbParsedRecord[] = [];
+
+    await levelDb.forEachRecord((record) => records.push(record), { includeDeleted: true });
+
+    assert.deepEqual(records, []);
+    assert.isTrue(levelDb.isInErrorState);
+  });
+
+  it("rejects LOG keys whose declared length exceeds the WriteBatch boundary", async () => {
+    const payload = [...fixed64(1), ...fixed32(1), 1, ...varint(100)];
+    const levelDb = new LevelDb([], [makeFile("000001.log", makeLogPhysicalRecord(payload))], [], "test");
+    const records: ILevelDbParsedRecord[] = [];
+
+    await levelDb.forEachRecord((record) => records.push(record), { includeDeleted: true });
+
+    assert.deepEqual(records, []);
+    assert.isTrue(levelDb.isInErrorState);
+  });
+
+  it("rejects LOG values whose declared length exceeds the WriteBatch boundary", async () => {
+    const payload = [...fixed64(1), ...fixed32(1), 1, ...varint(1), "a".charCodeAt(0), ...varint(100)];
+    const levelDb = new LevelDb([], [makeFile("000001.log", makeLogPhysicalRecord(payload))], [], "test");
+    const records: ILevelDbParsedRecord[] = [];
+
+    await levelDb.forEachRecord((record) => records.push(record), { includeValues: true });
+
+    assert.deepEqual(records, []);
+    assert.isTrue(levelDb.isInErrorState);
+  });
+
+  it("rejects SST entries whose declared key extends into restart metadata", () => {
+    const malformedEntry = new Uint8Array([0, ...varint(100), 0]);
+    const keyValue = new LevelKeyValue();
+
+    assert.throws(() => keyValue.loadFromLdb(malformedEntry, 0, undefined, malformedEntry.length));
+  });
+
+  it("reports malformed SST entries through the public parser", async () => {
+    const malformedRecord = [0, ...varint(100), 0];
+    const levelDb = new LevelDb([makeFile("000001.ldb", makeLdbFile([malformedRecord]))], [], [], "test");
+    const records: ILevelDbParsedRecord[] = [];
+
+    await levelDb.forEachRecord((record) => records.push(record), { includeValues: true });
+
+    assert.deepEqual(records, []);
+    assert.isTrue(levelDb.isInErrorState);
+  });
+
+  it("rejects unsupported SST internal-key value types", async () => {
+    const malformedTypeLdb = makeLdbFile([
+      makeLdbRecord(bytesFromString("invalid-type"), [1], 1, false, 2),
+    ]);
+    const levelDb = new LevelDb([makeFile("000001.ldb", malformedTypeLdb)], [], [], "test");
+    const records: ILevelDbParsedRecord[] = [];
+
+    await levelDb.forEachRecord((record) => records.push(record), { includeValues: true });
+
+    assert.deepEqual(records, []);
+    assert.isTrue(levelDb.isInErrorState);
+  });
+
   it("emits LOG tombstones only when includeDeleted is enabled", async () => {
     const log = makeLogFile([{ key: bytesFromString("gone"), deleted: true }]);
     const levelDb = new LevelDb([], [makeFile("000001.log", log)], [], "test");
@@ -285,13 +751,13 @@ describe("LevelDb.forEachRecord", () => {
 
   it("can reduce visitor output to the same effective records as init", async () => {
     const ldb = makeLdbFile([
-      makeLdbRecord(bytesFromString("duplicate"), [1]),
-      makeLdbRecord(bytesFromString("removed"), [2]),
+      makeLdbRecord(bytesFromString("duplicate"), [1], 1),
+      makeLdbRecord(bytesFromString("removed"), [2], 2),
     ]);
     const log = makeLogFile([
       { key: bytesFromString("duplicate"), value: [3] },
       { key: bytesFromString("removed"), deleted: true },
-    ]);
+    ], 3);
     const initDb = new LevelDb([makeFile("000001.ldb", ldb)], [makeFile("000002.log", log)], [], "test");
     const visitorDb = new LevelDb([makeFile("000001.ldb", ldb)], [makeFile("000002.log", log)], [], "test");
     const reduced = new Map<string, number[] | false>();
@@ -326,6 +792,7 @@ describe("WorldDataMetricsReducer", () => {
 
     assert.deepEqual(normalizeMetrics(reducer.getMetrics()), {
       chunkCount: 0,
+      customDimensionChunkCount: 0,
       subchunkLessChunkCount: 0,
       dimensionIds: [],
       hasDimensionNameIdTable: false,
@@ -335,6 +802,7 @@ describe("WorldDataMetricsReducer", () => {
 
     assert.deepEqual(normalizeMetrics(reducer.getMetrics()), {
       chunkCount: 1,
+      customDimensionChunkCount: 0,
       subchunkLessChunkCount: 0,
       minX: 16,
       maxX: 32,
@@ -342,6 +810,69 @@ describe("WorldDataMetricsReducer", () => {
       maxZ: 48,
       dimensionIds: [0],
       hasDimensionNameIdTable: false,
+    });
+  });
+
+  describe("MCWorld constrained dimension metadata", () => {
+    it("finishes custom dimension metadata after the full scan is truncated", async () => {
+      const ldb = makeLdbFile([
+        makeLdbRecord(Array.from(chunkKey(0, 0, 44)), [1]),
+        makeLdbRecord(bytesFromString("tickingarea_1"), [9]),
+        makeLdbRecord(Array.from(chunkKey(1, 0, 44, 1000)), [2], 3),
+        makeLdbRecord(Array.from(chunkKey(1, 0, 47, 1000, 0)), [3], 4),
+        makeLdbRecord(Array.from(chunkKey(2, 0, 44, 1001)), [4], 5),
+      ]);
+      const levelDb = new LevelDb([makeFile("000001.ldb", ldb)], [], [], "test");
+      const world = new MCWorld();
+
+      await levelDb.init();
+      await world.loadFromLevelDb(levelDb, {
+        maxNumberOfRecordsToProcess: 1,
+      });
+
+      assert.isTrue(world.wasLoadTruncated);
+      assert.strictEqual(world.chunkCount, 1);
+      assert.strictEqual(world.customDimensionChunkCount, 2);
+      assert.deepEqual(Array.from(world.dimensionIdsInChunks).sort((a, b) => a - b), [0, 1000, 1001]);
+
+      const olderIncrementalSst = makeLdbFile([
+        makeLdbRecord(Array.from(chunkKey(1, 0, 44, 1000)), [8], 2),
+      ]);
+      const affectedChunks = await levelDb.parseIncrementalFile(
+        makeFile("000002.ldb", olderIncrementalSst)
+      );
+      assert.deepEqual(affectedChunks, []);
+      assert.isUndefined(levelDb.keys.get(stringFromBytes(chunkKey(1, 0, 44, 1000))));
+    });
+
+    it("treats a compacted DimensionNameIdTable tombstone as absent", async () => {
+      const levelDb = new LevelDb([], [], [], "test");
+      const world = new MCWorld();
+      levelDb.keys.set("DimensionNameIdTable", false);
+
+      await world.loadFromLevelDb(levelDb, {
+        skipFullProcessing: true,
+        clearKeysAfterProcess: false,
+      });
+
+      assert.isFalse(world.hasDimensionNameIdTable);
+    });
+
+    it("releases custom-dimension records skipped by full processing", async () => {
+      const ldb = makeLdbFile([
+        makeLdbRecord(Array.from(chunkKey(0, 0, 44)), [1]),
+        makeLdbRecord(Array.from(chunkKey(1, 0, 44, 1000)), [2]),
+        makeLdbRecord(Array.from(chunkKey(2, 0, 42, 1000)), [3]),
+      ]);
+      const levelDb = new LevelDb([makeFile("000001.ldb", ldb)], [], [], "test");
+      const world = new MCWorld();
+
+      await levelDb.init();
+      await world.loadFromLevelDb(levelDb);
+
+      assert.strictEqual(world.chunkCount, 1);
+      assert.strictEqual(world.customDimensionChunkCount, 1);
+      assert.strictEqual(levelDb.keys.size, 0);
     });
   });
 
@@ -355,6 +886,7 @@ describe("WorldDataMetricsReducer", () => {
 
     assert.deepEqual(normalizeMetrics(metrics), {
       chunkCount: 4,
+      customDimensionChunkCount: 0,
       subchunkLessChunkCount: 2,
       minX: -16,
       maxX: 48,
@@ -375,10 +907,55 @@ describe("WorldDataMetricsReducer", () => {
 
     assert.deepEqual(normalizeMetrics(metrics), {
       chunkCount: 0,
+      customDimensionChunkCount: 1,
       subchunkLessChunkCount: 0,
       dimensionIds: [0, 1000],
       hasDimensionNameIdTable: false,
     });
+  });
+
+  it("counts unique chunks across custom dimensions", () => {
+    const metrics = WorldDataMetricsReducer.getMetricsForRecords([
+      record(chunkKey(0, 0, 44, 1000)),
+      record(chunkKey(0, 0, 47, 1000, 0)),
+      record(chunkKey(1, 0, 44, 1000)),
+      record(chunkKey(0, 0, 44, 1001)),
+      record(chunkKey(1, 0, 72, 1001)),
+      record(chunkKey(2, 0, 115, 1001)),
+    ]);
+
+    assert.strictEqual(metrics.customDimensionChunkCount, 5);
+    assert.deepEqual(Array.from(metrics.dimensionIds).sort((a, b) => a - b), [1000, 1001]);
+  });
+
+  it("does not count non-chunk records with custom-dimension-shaped keys", () => {
+    const invalidKey = chunkKey(0, 0, 42, 1000);
+    const metrics = WorldDataMetricsReducer.getMetricsForRecords([record(invalidKey)]);
+
+    assert.strictEqual(WorldDataMetricsReducer.getChunkRecordMetadata(invalidKey), undefined);
+    assert.strictEqual(metrics.customDimensionChunkCount, 0);
+    assert.deepEqual(Array.from(metrics.dimensionIds), []);
+  });
+
+  it("rejects negative dimension IDs", () => {
+    const negativeDimensionKey = chunkKey(0, 0, 44, -1);
+    const metadata = WorldDataMetricsReducer.getChunkRecordMetadata(negativeDimensionKey);
+    const metrics = WorldDataMetricsReducer.getMetricsForRecords([record(negativeDimensionKey)]);
+
+    assert.isUndefined(metadata);
+    assert.strictEqual(metrics.chunkCount, 0);
+    assert.strictEqual(metrics.customDimensionChunkCount, 0);
+    assert.deepEqual(Array.from(metrics.dimensionIds), []);
+  });
+
+  it("does not count named records that resemble valid custom-dimension chunk keys", () => {
+    const namedKey = new Uint8Array(bytesFromString("tickingarea_1"));
+    const metrics = WorldDataMetricsReducer.getMetricsForRecords([record(namedKey)]);
+
+    assert.strictEqual(namedKey.length, 13);
+    assert.isTrue(WorldDataMetricsReducer.isNamedWorldRecordKey("tickingarea_1"));
+    assert.strictEqual(metrics.customDimensionChunkCount, 0);
+    assert.deepEqual(Array.from(metrics.dimensionIds), []);
   });
 
   it("tracks DimensionNameIdTable value and tombstones for CDWORLDDATA", () => {
@@ -389,6 +966,7 @@ describe("WorldDataMetricsReducer", () => {
 
     assert.deepEqual(normalizeMetrics(reducer.getMetrics()), {
       chunkCount: 0,
+      customDimensionChunkCount: 0,
       subchunkLessChunkCount: 0,
       dimensionIds: [],
       hasDimensionNameIdTable: true,
@@ -399,6 +977,7 @@ describe("WorldDataMetricsReducer", () => {
 
     assert.deepEqual(normalizeMetrics(reducer.getMetrics()), {
       chunkCount: 0,
+      customDimensionChunkCount: 0,
       subchunkLessChunkCount: 0,
       dimensionIds: [],
       hasDimensionNameIdTable: false,

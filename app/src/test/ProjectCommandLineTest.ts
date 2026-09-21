@@ -589,6 +589,64 @@ describe("setupCommandPinnedVersions", async () => {
   }).timeout(10000);
 });
 
+describe("setupCommandScriptedProjectLaunch", async () => {
+  // Regression: the setup path never assigned the loaded project to the
+  // VsCodeLaunchDefinition, so getExpectedScriptModuleUuid() returned
+  // undefined and the generated managed launch profile carried no
+  // targetModuleUuid even for a scripted project - with multiple scripted
+  // packs active, the debugger could then prompt for or attach to the
+  // wrong module.
+  let exitCode: number | null = null;
+  const stdoutLines: string[] = [];
+  const stderrLines: string[] = [];
+
+  // The addon sample's behavior pack declares this script module.
+  const expectedScriptModuleUuid = "f43bb32a-c814-45e4-a428-3f4f1f59b2a3";
+
+  before(function (done) {
+    this.timeout(15000);
+
+    removeResultFolder("setupLaunch");
+    ensureResultFolder("setupLaunch");
+
+    // Copy a scripted behavior pack to a writeable location so setup can
+    // generate .vscode/launch.json next to it.
+    const src = "./../samplecontent/addon/behavior_packs/";
+    const dst = "./test/results/setupLaunch/behavior_packs/";
+
+    fs.cpSync(src, dst, { recursive: true });
+
+    const process = spawn("node", ["./toolbuild/jsn/cli/index.mjs", "setup", "-i", "./test/results/setupLaunch/"]);
+
+    collectLines(process.stdout, stdoutLines);
+    collectLines(process.stderr, stderrLines);
+
+    process.on("exit", (code) => {
+      exitCode = code;
+      done();
+    });
+  });
+
+  it("exit code should be zero", async () => {
+    assert.equal(exitCode, 0, "Setup should succeed. Stderr: " + stderrLines.join("\n"));
+  }).timeout(10000);
+
+  it("generated launch.json targets the project's script module", async () => {
+    const launchPath = "./test/results/setupLaunch/.vscode/launch.json";
+    assert(fs.existsSync(launchPath), "launch.json should exist at " + launchPath);
+
+    const launch = JSON.parse(fs.readFileSync(launchPath, "utf-8"));
+    const configs = (launch.configurations || []).filter((c: { type?: string }) => c.type === "minecraft-js");
+
+    assert.equal(configs.length, 1, "setup should generate exactly one managed minecraft-js profile");
+    assert.equal(
+      configs[0].targetModuleUuid,
+      expectedScriptModuleUuid,
+      "the serialized profile must target the pack's script module"
+    );
+  }).timeout(10000);
+});
+
 describe("worldCommand", async () => {
   let exitCode: number | null = null;
   const stdoutLines: string[] = [];

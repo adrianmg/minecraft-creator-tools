@@ -21,6 +21,8 @@ const ignorableTokens = [
   "404 (Not Found)", // Map viewer may request textures that don't exist for certain block types
 ];
 
+const projectItemSelector = "[role='treeitem'], [role='option']";
+
 export type ThemeMode = "light" | "dark";
 
 /**
@@ -71,17 +73,29 @@ export async function waitForAppReady(page: Page, timeoutMs: number = 10000): Pr
     // Wait for network to be idle (if supported)
     await page.waitForLoadState("domcontentloaded");
 
-    // Wait a bit for React to finish rendering
-    await page.waitForTimeout(1000);
+    const readySignals = [
+      page.getByRole("button", { name: "New" }).first(),
+      page.getByRole("button", { name: "Create New" }).first(),
+      page.locator('button[title*="Home"]').first(),
+      page.locator('button:has-text("View")').first(),
+      page.locator('button:has-text("Settings")').first(),
+    ];
 
-    // Check if we have actual content (not an error page)
-    const hasContent = await page.evaluate(() => {
-      const body = document.body;
-      // Should have more than just error text
-      return body.innerText.trim().length > 100;
-    });
+    await expect
+      .poll(
+        async () => {
+          for (const signal of readySignals) {
+            if (await signal.isVisible({ timeout: 250 }).catch(() => false)) {
+              return true;
+            }
+          }
+          return false;
+        },
+        { timeout: timeoutMs, message: "Timed out waiting for the app home or editor controls" }
+      )
+      .toBe(true);
 
-    return hasContent;
+    return true;
   } catch {
     return false;
   }
@@ -161,14 +175,12 @@ export async function enterEditor(page: Page): Promise<boolean> {
 
     console.log("enterEditor: Clicking 'New' button to create project");
     await newButton.click();
-    await page.waitForTimeout(1500);
 
     // Select browser storage if available (prevents file-system-only flow in Electron)
     const browserStorageRadio = page.getByRole("radio", { name: /Browser|This Browser/i }).first();
     if (await browserStorageRadio.isVisible({ timeout: 2000 }).catch(() => false)) {
       await browserStorageRadio.scrollIntoViewIfNeeded().catch(() => {});
       await browserStorageRadio.check({ force: true });
-      await page.waitForTimeout(500);
       console.log("enterEditor: Selected Browser Storage for automated test flow");
     }
 
@@ -192,16 +204,15 @@ export async function enterEditor(page: Page): Promise<boolean> {
       }
     }
 
-    // Wait for editor to load - poll for up to 15 seconds
-    let inEditor = false;
-    for (let i = 0; i < 15; i++) {
-      await page.waitForTimeout(1000);
-      inEditor = await isInEditor(page);
-      if (inEditor) {
-        break;
-      }
-      console.log(`enterEditor: Waiting for editor to load... (${i + 1}s)`);
-    }
+    // Wait for editor to load, returning as soon as its toolbar appears.
+    const inEditor = await expect
+      .poll(() => isInEditor(page), {
+        timeout: 15000,
+        message: "Timed out waiting for the editor interface to load",
+      })
+      .toBe(true)
+      .then(() => true)
+      .catch(() => false);
 
     // Verify we're in the editor
     if (inEditor) {
@@ -230,7 +241,6 @@ export async function enterEditorWithTemplate(page: Page, templateTitle: string)
   try {
     // Close any open dialogs first
     await closeDialogs(page);
-    await page.waitForTimeout(500);
 
     // Navigate home if currently in editor
     if (await isInEditor(page)) {
@@ -239,7 +249,6 @@ export async function enterEditorWithTemplate(page: Page, templateTitle: string)
         console.log("enterEditorWithTemplate: Could not navigate home");
         return false;
       }
-      await page.waitForTimeout(2000);
     }
 
     // Make sure app is ready
@@ -251,7 +260,10 @@ export async function enterEditorWithTemplate(page: Page, templateTitle: string)
 
     // Try to find the template tile directly (web flow where templates are visible on home)
     let templateTile = page.locator(`[title="Create new project from ${templateTitle}"]`).first();
-    let tileVisible = await templateTile.isVisible({ timeout: 2000 }).catch(() => false);
+    let tileVisible = await expect(templateTile)
+      .toBeVisible({ timeout: 2000 })
+      .then(() => true)
+      .catch(() => false);
 
     // If not visible, try clicking "New Project" to show template gallery (Electron landing flow)
     if (!tileVisible) {
@@ -260,19 +272,20 @@ export async function enterEditorWithTemplate(page: Page, templateTitle: string)
       if (await newProjectButton.isVisible({ timeout: 2000 }).catch(() => false)) {
         console.log("enterEditorWithTemplate: Clicking 'New Project' button to show templates");
         await newProjectButton.click();
-        await page.waitForTimeout(2000);
       } else {
         // Try the generic "New" button (web flow home page)
         const newButton = page.getByRole("button", { name: "New" }).first();
         if (await newButton.isVisible({ timeout: 2000 }).catch(() => false)) {
           console.log("enterEditorWithTemplate: Clicking 'New' button to show templates");
           await newButton.click();
-          await page.waitForTimeout(2000);
         }
       }
 
       templateTile = page.locator(`[title="Create new project from ${templateTitle}"]`).first();
-      tileVisible = await templateTile.isVisible({ timeout: 10000 }).catch(() => false);
+      tileVisible = await expect(templateTile)
+        .toBeVisible({ timeout: 10000 })
+        .then(() => true)
+        .catch(() => false);
     }
 
     if (!tileVisible) {
@@ -282,14 +295,16 @@ export async function enterEditorWithTemplate(page: Page, templateTitle: string)
 
     console.log(`enterEditorWithTemplate: Clicking template '${templateTitle}'`);
     await templateTile.click();
-    await page.waitForTimeout(1000);
 
     // In CodeStartPage (Electron), clicking a template selects it and shows a "Create" button
     const cspCreateButton = page.locator("button:has-text('Create')").first();
-    if (await cspCreateButton.isVisible({ timeout: 3000 }).catch(() => false)) {
+    const cspCreateVisible = await expect(cspCreateButton)
+      .toBeVisible({ timeout: 3000 })
+      .then(() => true)
+      .catch(() => false);
+    if (cspCreateVisible) {
       console.log("enterEditorWithTemplate: Clicking 'Create' on CodeStartPage");
       await cspCreateButton.click();
-      await page.waitForTimeout(1000);
     }
 
     // Select browser storage if available (prevents file-system-only flow in Electron)
@@ -297,7 +312,6 @@ export async function enterEditorWithTemplate(page: Page, templateTitle: string)
     if (await browserStorageRadio.isVisible({ timeout: 2000 }).catch(() => false)) {
       await browserStorageRadio.scrollIntoViewIfNeeded().catch(() => {});
       await browserStorageRadio.check({ force: true });
-      await page.waitForTimeout(500);
       console.log("enterEditorWithTemplate: Selected Browser Storage for automated test flow");
     }
 
@@ -314,16 +328,15 @@ export async function enterEditorWithTemplate(page: Page, templateTitle: string)
       }
     }
 
-    // Wait for editor to load
-    let inEditor = false;
-    for (let i = 0; i < 15; i++) {
-      await page.waitForTimeout(1000);
-      inEditor = await isInEditor(page);
-      if (inEditor) {
-        break;
-      }
-      console.log(`enterEditorWithTemplate: Waiting for editor to load... (${i + 1}s)`);
-    }
+    // Wait for editor to load, returning as soon as its toolbar appears.
+    const inEditor = await expect
+      .poll(() => isInEditor(page), {
+        timeout: 15000,
+        message: "Timed out waiting for the editor interface to load",
+      })
+      .toBe(true)
+      .then(() => true)
+      .catch(() => false);
 
     if (inEditor) {
       console.log("enterEditorWithTemplate: Successfully entered editor interface");
@@ -348,27 +361,32 @@ export async function goToHome(page: Page): Promise<boolean> {
       return true;
     }
 
-    // Close any open dialogs by pressing Escape multiple times
-    // Some dialogs require multiple Escape presses
+    // Close any open dialogs by pressing Escape multiple times.
     for (let i = 0; i < 3; i++) {
       await page.keyboard.press("Escape");
-      await page.waitForTimeout(300);
     }
-
-    // Wait for dialogs to close
-    await page.waitForTimeout(500);
 
     // Click the Home button in the editor toolbar
     // The Home button has title="Home/Project List" but is icon-only
     const homeButton = page.locator('button[title*="Home"]').first();
 
-    if (await homeButton.isVisible({ timeout: 3000 })) {
+    const homeVisible = await expect(homeButton)
+      .toBeVisible({ timeout: 3000 })
+      .then(() => true)
+      .catch(() => false);
+    if (homeVisible) {
       console.log("goToHome: Clicking Home button");
 
       // Use force click to bypass any overlay issues
       await homeButton.click({ force: true });
-      await page.waitForTimeout(2000);
-      return await isOnHomePage(page);
+      return await expect
+        .poll(() => isOnHomePage(page), {
+          timeout: 10000,
+          message: "Timed out waiting for the home page after clicking Home",
+        })
+        .toBe(true)
+        .then(() => true)
+        .catch(() => false);
     }
 
     console.log("goToHome: Could not find Home button");
@@ -392,14 +410,15 @@ export async function closeDialogs(page: Page): Promise<void> {
       const cancelButton = page.locator("button:has-text('Cancel')").first();
       if (await cancelButton.isVisible({ timeout: 500 }).catch(() => false)) {
         await cancelButton.click();
-        await page.waitForTimeout(300);
+        await expect(wizardDialog)
+          .not.toBeVisible({ timeout: 2000 })
+          .catch(() => {});
       }
     }
 
     // Press Escape multiple times to close any remaining dialogs
     for (let i = 0; i < 3; i++) {
       await page.keyboard.press("Escape");
-      await page.waitForTimeout(200);
     }
   } catch {
     // Ignore errors - page may be closed
@@ -422,16 +441,28 @@ export async function openAddMenu(page: Page): Promise<boolean> {
 
     if (await addButton.isVisible({ timeout: 3000 })) {
       await addButton.click();
-      await page.waitForTimeout(1000); // Wait for dialog to fully open
-      return true;
+      return await expect
+        .poll(() => isContentWizardOpen(page), {
+          timeout: 5000,
+          message: "Timed out waiting for the ContentWizard to open after clicking Add",
+        })
+        .toBe(true)
+        .then(() => true)
+        .catch(() => false);
     }
 
     // Fallback: look for button with plus icon in the project list area
     const plusButton = page.locator(".pab-outer button").first();
     if (await plusButton.isVisible({ timeout: 2000 })) {
       await plusButton.click();
-      await page.waitForTimeout(1000); // Wait for dialog to fully open
-      return true;
+      return await expect
+        .poll(() => isContentWizardOpen(page), {
+          timeout: 5000,
+          message: "Timed out waiting for the ContentWizard to open after clicking the plus button",
+        })
+        .toBe(true)
+        .then(() => true)
+        .catch(() => false);
     }
 
     return false;
@@ -460,19 +491,22 @@ export async function selectProjectItem(page: Page, itemName: string): Promise<b
     // Use exact matching via aria-label to avoid matching category headers
     // e.g., "manifest" should not match "Behavior pack manifests"
     // Use .first() in case of duplicates (e.g., behavior + resource pack manifests)
-    const item = page.getByRole("option", { name: itemName, exact: true }).first();
+    const item = page
+      .getByRole("treeitem", { name: itemName, exact: true })
+      .or(page.getByRole("option", { name: itemName, exact: true }))
+      .first();
 
     if (await item.isVisible({ timeout: 3000 })) {
       await item.click();
-      await page.waitForTimeout(500);
+      await expect(item).toHaveAttribute("aria-selected", "true", { timeout: 5000 });
       return true;
     }
 
     // Fallback: try partial match with has-text (for items whose accessible name differs)
-    const partialItem = page.locator(`[role='option']:has-text('${itemName}')`).first();
+    const partialItem = page.locator(projectItemSelector).filter({ hasText: itemName }).first();
     if (await partialItem.isVisible({ timeout: 2000 })) {
       await partialItem.click();
-      await page.waitForTimeout(500);
+      await expect(partialItem).toHaveAttribute("aria-selected", "true", { timeout: 5000 });
       return true;
     }
 
@@ -487,7 +521,7 @@ export async function selectProjectItem(page: Page, itemName: string): Promise<b
  */
 export async function getProjectItemCount(page: Page): Promise<number> {
   try {
-    const items = page.locator("[role='option']");
+    const items = page.locator(projectItemSelector);
     return await items.count();
   } catch {
     return 0;
@@ -538,30 +572,34 @@ export async function switchToFullEditMode(page: Page): Promise<boolean> {
     }
 
     await settingsButton.click();
-    await page.waitForTimeout(1000);
 
     // Click the "Full" edit option button
     const fullButton = page.locator('button:has-text("Full")').first();
 
-    if (await fullButton.isVisible({ timeout: 3000 })) {
-      await fullButton.click();
-      await page.waitForTimeout(500);
-      console.log("switchToFullEditMode: Switched to Full edit mode");
-    } else {
+    const fullButtonVisible = await expect(fullButton)
+      .toBeVisible({ timeout: 3000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!fullButtonVisible) {
       console.log("switchToFullEditMode: Full button not found in settings");
       return false;
     }
+    await fullButton.click();
+    console.log("switchToFullEditMode: Switched to Full edit mode");
 
     // Navigate back to the editor by selecting a file item (not Actions/Properties/etc.)
     // IMPORTANT: Use exact matching to avoid clicking category headers like "Behavior pack manifests"
     // Use .first() because there may be multiple manifest files (behavior + resource pack)
-    const manifestItem = page.getByRole("option", { name: /^manifest\*?$/i }).first();
+    const manifestItem = page
+      .getByRole("treeitem", { name: /^manifest\*?$/i })
+      .or(page.getByRole("option", { name: /^manifest\*?$/i }))
+      .first();
     if (await manifestItem.isVisible({ timeout: 2000 })) {
       await manifestItem.click();
-      await page.waitForTimeout(500);
+      await expect(manifestItem).toHaveAttribute("aria-selected", "true", { timeout: 5000 });
     } else {
       // Fallback: try any visible option that's a file item (skip special items AND category headers)
-      const options = page.locator("[role='option']");
+      const options = page.locator(projectItemSelector);
       const count = await options.count();
       let clicked = false;
       for (let i = 0; i < count && !clicked; i++) {
@@ -584,12 +622,11 @@ export async function switchToFullEditMode(page: Page): Promise<boolean> {
         // Good candidate: a simple file item like "manifest", "main", "tsconfig", etc.
         console.log(`switchToFullEditMode: Selecting fallback item "${trimmed}"`);
         await options.nth(i).click();
-        await page.waitForTimeout(500);
+        await expect(options.nth(i)).toHaveAttribute("aria-selected", "true", { timeout: 5000 });
         clicked = true;
       }
       if (!clicked) {
         await page.keyboard.press("Escape");
-        await page.waitForTimeout(500);
       }
     }
 
@@ -615,33 +652,36 @@ export async function switchToRawEditPreference(page: Page): Promise<boolean> {
     }
 
     await settingsButton.click();
-    await page.waitForTimeout(1000);
 
     // Click the "Raw" edit option button
     const rawButton = page.locator('button:has-text("Raw")').first();
 
-    if (await rawButton.isVisible({ timeout: 3000 })) {
-      await rawButton.click();
-      await page.waitForTimeout(1000);
-      console.log("switchToRawEditPreference: Clicked Raw button");
-    } else {
+    const rawButtonVisible = await expect(rawButton)
+      .toBeVisible({ timeout: 3000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!rawButtonVisible) {
       console.log("switchToRawEditPreference: Raw button not found in settings");
       await page.keyboard.press("Escape");
       return false;
     }
+    await rawButton.click();
+    console.log("switchToRawEditPreference: Clicked Raw button");
 
     // After switching to Raw, the sidebar list may re-render. Wait for it to stabilize.
-    await page.waitForTimeout(500);
+    await expect(page.locator(projectItemSelector).first()).toBeVisible({ timeout: 5000 });
 
     // Navigate back to editor by selecting a real file item (not Actions/Properties/Inspector).
     // IMPORTANT: Use exact matching to avoid clicking category headers like "Behavior pack manifests"
     // which contain "manifest" text but are section headers, not actual files.
     // Use .first() because there may be multiple manifest files (behavior + resource pack).
-    const manifestItem = page.getByRole("option", { name: "manifest", exact: true }).first();
+    const manifestItem = page
+      .getByRole("treeitem", { name: "manifest", exact: true })
+      .or(page.getByRole("option", { name: "manifest", exact: true }))
+      .first();
     if (await manifestItem.isVisible({ timeout: 3000 })) {
       console.log("switchToRawEditPreference: Clicking manifest file item (exact match)");
       await manifestItem.click();
-      await page.waitForTimeout(2000);
 
       // Verify we're out of Settings by checking for monaco-editor or editor content
       const monacoCheck = page.locator(".monaco-editor").first();
@@ -653,7 +693,7 @@ export async function switchToRawEditPreference(page: Page): Promise<boolean> {
     console.log("switchToRawEditPreference: manifest item not visible, scanning for file items");
 
     // Fallback: find a file-like item (skip special items AND category headers)
-    const options = page.locator("[role='option']");
+    const options = page.locator(projectItemSelector);
     const count = await options.count();
     console.log(`switchToRawEditPreference: Found ${count} sidebar options`);
     for (let i = 0; i < count; i++) {
@@ -682,7 +722,6 @@ export async function switchToRawEditPreference(page: Page): Promise<boolean> {
 
       console.log(`switchToRawEditPreference: Clicking file item "${trimmed}"`);
       await options.nth(i).click();
-      await page.waitForTimeout(2000);
       const monacoCheck = page.locator(".monaco-editor").first();
       const monacoFound = await monacoCheck.isVisible({ timeout: 3000 }).catch(() => false);
       if (monacoFound) {
@@ -694,7 +733,6 @@ export async function switchToRawEditPreference(page: Page): Promise<boolean> {
     // Last resort: press Escape
     console.log("switchToRawEditPreference: No suitable option found, pressing Escape");
     await page.keyboard.press("Escape");
-    await page.waitForTimeout(500);
     return true;
   } catch (error) {
     console.log(`switchToRawEditPreference: Error - ${error}`);
@@ -728,18 +766,29 @@ export async function switchToRawMode(page: Page): Promise<boolean> {
 
     // Click the dropdown to open it
     await dropdown.click();
-    await page.waitForTimeout(300);
 
     // Select "Single JSON view"
     const jsonOption = page.locator('[role="option"]:has-text("Single JSON view")').first();
-    if (await jsonOption.isVisible({ timeout: 2000 })) {
+    const jsonOptionVisible = await expect(jsonOption)
+      .toBeVisible({ timeout: 2000 })
+      .then(() => true)
+      .catch(() => false);
+    if (jsonOptionVisible) {
       await jsonOption.click();
     } else {
       // Fallback: try text match in listbox
       const listbox = page.locator('[role="listbox"]').first();
-      if (await listbox.isVisible({ timeout: 1000 })) {
+      const listboxVisible = await expect(listbox)
+        .toBeVisible({ timeout: 1000 })
+        .then(() => true)
+        .catch(() => false);
+      if (listboxVisible) {
         const option = listbox.locator('text="Single JSON view"').first();
-        if (await option.isVisible({ timeout: 1000 })) {
+        const optionVisible = await expect(option)
+          .toBeVisible({ timeout: 1000 })
+          .then(() => true)
+          .catch(() => false);
+        if (optionVisible) {
           await option.click();
         } else {
           console.log("switchToRawMode: 'Single JSON view' option not found");
@@ -752,7 +801,6 @@ export async function switchToRawMode(page: Page): Promise<boolean> {
       }
     }
 
-    await page.waitForTimeout(500);
     console.log("switchToRawMode: Switched to raw JSON view");
     return true;
   } catch (error) {
@@ -777,16 +825,27 @@ export async function switchToFormMode(page: Page): Promise<boolean> {
     }
 
     await dropdown.click();
-    await page.waitForTimeout(300);
 
     const editorOption = page.locator('[role="option"]:has-text("Single editor view")').first();
-    if (await editorOption.isVisible({ timeout: 2000 })) {
+    const editorOptionVisible = await expect(editorOption)
+      .toBeVisible({ timeout: 2000 })
+      .then(() => true)
+      .catch(() => false);
+    if (editorOptionVisible) {
       await editorOption.click();
     } else {
       const listbox = page.locator('[role="listbox"]').first();
-      if (await listbox.isVisible({ timeout: 1000 })) {
+      const listboxVisible = await expect(listbox)
+        .toBeVisible({ timeout: 1000 })
+        .then(() => true)
+        .catch(() => false);
+      if (listboxVisible) {
         const option = listbox.locator('text="Single editor view"').first();
-        if (await option.isVisible({ timeout: 1000 })) {
+        const optionVisible = await expect(option)
+          .toBeVisible({ timeout: 1000 })
+          .then(() => true)
+          .catch(() => false);
+        if (optionVisible) {
           await option.click();
         } else {
           console.log("switchToFormMode: 'Single editor view' option not found");
@@ -796,7 +855,6 @@ export async function switchToFormMode(page: Page): Promise<boolean> {
       }
     }
 
-    await page.waitForTimeout(500);
     console.log("switchToFormMode: Switched to form editor view");
     return true;
   } catch (error) {
@@ -816,7 +874,11 @@ export async function enableAllFileTypes(page: Page): Promise<boolean> {
 
     if (await showAllButton.isVisible({ timeout: 3000 })) {
       await showAllButton.click();
-      await page.waitForTimeout(1000);
+      await page
+        .locator('[role="menu"]')
+        .first()
+        .waitFor({ state: "hidden", timeout: 3000 })
+        .catch(() => {});
       console.log("enableAllFileTypes: Clicked 'All Single Files' button");
       return true;
     }
@@ -914,20 +976,22 @@ export async function ensureTypeScriptFileSelected(page: Page, fileName: string 
     const contentLocator = page.locator(".monaco-editor .view-lines").first();
     const lineNumbers = page.locator(".monaco-editor .line-numbers");
 
-    for (let i = 0; i < 20; i++) {
-      const content = ((await contentLocator.textContent()) || "").trim();
-      const lineNumberCount = await lineNumbers.count();
-      if (content.length > 0 && lineNumberCount > 0) {
-        return true;
-      }
-      await page.waitForTimeout(200);
-    }
-
-    return false;
+    return await expect
+      .poll(
+        async () => {
+          const content = ((await contentLocator.textContent()) || "").trim();
+          const lineNumberCount = await lineNumbers.count();
+          return content.length > 0 && lineNumberCount > 0;
+        },
+        { timeout: 6000, message: "Timed out waiting for Monaco content and line numbers" }
+      )
+      .toBe(true)
+      .then(() => true)
+      .catch(() => false);
   };
 
   const trySelectTargetFile = async (allowAnyScriptFile: boolean): Promise<boolean> => {
-    const options = page.locator("[role='option']");
+    const options = page.locator(projectItemSelector);
     const optionCount = await options.count();
     let fallbackScriptIndex = -1;
 
@@ -952,7 +1016,6 @@ export async function ensureTypeScriptFileSelected(page: Page, fileName: string 
 
       if (targetNames.has(normalized)) {
         await option.click();
-        await page.waitForTimeout(700);
         if (await waitForMonacoReady()) {
           console.log(`ensureTypeScriptFileSelected: Found '${rawLabel}'`);
           return true;
@@ -966,9 +1029,12 @@ export async function ensureTypeScriptFileSelected(page: Page, fileName: string 
 
     if (allowAnyScriptFile && fallbackScriptIndex >= 0) {
       const fallbackOption = options.nth(fallbackScriptIndex);
-      const rawLabel = ((await fallbackOption.getAttribute("aria-label")) || (await fallbackOption.textContent()) || "").trim();
+      const rawLabel = (
+        (await fallbackOption.getAttribute("aria-label")) ||
+        (await fallbackOption.textContent()) ||
+        ""
+      ).trim();
       await fallbackOption.click();
-      await page.waitForTimeout(700);
       if (await waitForMonacoReady()) {
         console.log(`ensureTypeScriptFileSelected: Using script file fallback '${rawLabel}'`);
         return true;
@@ -983,12 +1049,15 @@ export async function ensureTypeScriptFileSelected(page: Page, fileName: string 
   }
 
   for (const categoryName of ["TypeScript files", "Scripts"]) {
-    const category = page.locator("[role='option']").filter({ hasText: categoryName }).first();
+    const category = page.locator(projectItemSelector).filter({ hasText: categoryName }).first();
     if (await category.isVisible({ timeout: 1500 }).catch(() => false)) {
       console.log(`ensureTypeScriptFileSelected: Toggling ${categoryName} category`);
       for (let i = 0; i < 2; i++) {
+        const previousExpandedState = await category.getAttribute("aria-expanded");
         await category.click();
-        await page.waitForTimeout(700);
+        if (previousExpandedState !== null) {
+          await expect(category).not.toHaveAttribute("aria-expanded", previousExpandedState, { timeout: 5000 });
+        }
         if (await trySelectTargetFile(i === 1)) {
           return true;
         }

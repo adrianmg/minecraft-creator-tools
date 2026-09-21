@@ -14,8 +14,10 @@ import {
   IPackFileCountInfoGeneratorResults,
   MaxFolderTraversalDepth,
   PackFileCountInfoGeneratorTest,
+  PackFileCountValidationRules,
   RecommendedMaxFileCount,
 } from "./PackFileCountInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { PackFileCountInfoGeneratorTest };
 export type { IPackFileCountInfoGeneratorResults };
@@ -26,10 +28,12 @@ export type { IPackFileCountInfoGeneratorResults };
  * folder recursively, descending into container files (.zip/.mcpack/.mcaddon/etc.)
  * the same way PackSizeInfoGenerator does.
  */
-export default class PackFileCountInfoGenerator implements IProjectInfoGenerator {
+export default class PackFileCountInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "PACKFILECOUNT";
   title = "Pack File Count";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = PackFileCountValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {
     info.fileCount = infoSet.getFirstNumberDataValue(this.id, PackFileCountInfoGeneratorTest.fileCount);

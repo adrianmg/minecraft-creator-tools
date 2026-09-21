@@ -4,17 +4,20 @@ import StorageUtilities from "../../../storage/StorageUtilities";
 import { InfoItemType } from "../../IInfoItemData";
 import IProjectFileInfoGenerator from "../../IProjectFileInfoGenerator";
 import ProjectInfoItem from "../../ProjectInfoItem";
-import { CheckNoBOMGeneratorTest } from "./CheckNoBOMGeneratorData";
+import { CheckNoBOMGeneratorTest, CheckNoBOMValidationRules } from "./CheckNoBOMGeneratorData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 /**********
  * Generator that generates error results if Byte Order Marks are found within .json files
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/nobom.form.json} for topic definitions
  *********/
-export default class CheckNoBOMGenerator implements IProjectFileInfoGenerator {
+export default class CheckNoBOMGenerator implements IProjectFileInfoGenerator, IValidationRuleProvider {
   id: string = "NOBOM";
   title: string = "No Byte Order Mark allowed in json file.";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = CheckNoBOMValidationRules;
 
   private severity = InfoItemType.error;
 

@@ -14,15 +14,19 @@ import WorldTemplateManifestDefinition from "../minecraft/WorldTemplateManifestD
 import ProjectInfoSet from "../info/ProjectInfoSet";
 import ContentIndex from "../core/ContentIndex";
 import { isMinorVersionTooOld } from "../core/versioning/MinecraftVersionRules";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../info/tests/ValidationRuleDefinition";
+import { BaseGameVersionValidationRules } from "./BaseGameVersionManagerData";
 
 /**
  * Validates and updates base game version settings in world template manifests.
  *
  * @see {@link ../../../public/data/forms/mctoolsval/basegamever.form.json} for topic definitions
  */
-export default class BaseGameVersionManager implements IProjectInfoGenerator, IProjectUpdater {
+export default class BaseGameVersionManager implements IProjectInfoGenerator, IProjectUpdater, IValidationRuleProvider {
   id = "BASEGAMEVER";
   title = "Base Game Version";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = BaseGameVersionValidationRules;
 
   performPlatformVersionValidations: boolean = false;
 

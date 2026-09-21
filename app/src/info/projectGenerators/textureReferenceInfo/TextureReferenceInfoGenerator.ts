@@ -12,6 +12,7 @@ import TerrainTextureCatalogDefinition from "../../../minecraft/TerrainTextureCa
 import ItemTextureCatalogDefinition from "../../../minecraft/ItemTextureCatalogDefinition";
 import ContentIndex, { AnnotationCategory } from "../../../core/ContentIndex";
 import { TextureReferenceInfoGeneratorTest } from "./TextureReferenceInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { TextureReferenceInfoGeneratorTest };
 
@@ -20,9 +21,14 @@ export { TextureReferenceInfoGeneratorTest };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/textureref.form.json} for topic definitions
  */
-export default class TextureReferenceInfoGenerator implements IProjectInfoGenerator {
+export default class TextureReferenceInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "TEXTUREREF";
   title = "Texture References";
+
+  // TEXTUREREF aggregates texture references into the content index and
+  // emits no error/warning/recommendation results; its rule inventory is
+  // deliberately empty.
+  readonly validationRules: readonly ValidationRuleDefinition[] = [];
 
   performAddOnValidations = false;
 

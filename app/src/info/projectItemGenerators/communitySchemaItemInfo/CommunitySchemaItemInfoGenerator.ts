@@ -15,11 +15,15 @@ import ContentIndex from "../../../core/ContentIndex";
 import MinecraftDefinitions from "../../../minecraft/MinecraftDefinitions";
 import ProjectItemUtilities from "../../../app/ProjectItemUtilities";
 import { JSONSchema7, validate } from "json-schema";
-import { CommunitySchemaItemInfoGeneratorTest } from "./CommunitySchemaItemInfoData";
+import {
+  CommunitySchemaErrorBase as JsonSchemaErrorBase,
+  CommunitySchemaItemInfoGeneratorTest,
+  CommunitySchemaValidationRules,
+} from "./CommunitySchemaItemInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { CommunitySchemaItemInfoGeneratorTest };
 
-const JsonSchemaErrorBase = 100;
 const NotCurrentFormatVersionBase = 1100;
 
 /**
@@ -27,10 +31,12 @@ const NotCurrentFormatVersionBase = 1100;
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/comjson.form.json} for topic definitions
  */
-export default class CommunitySchemaItemInfoGenerator implements IProjectInfoItemGenerator {
+export default class CommunitySchemaItemInfoGenerator implements IProjectInfoItemGenerator, IValidationRuleProvider {
   id = "COMJSON";
   title = "Community JSON Schema Validation";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = CommunitySchemaValidationRules;
 
   _schemaContentByPath: { [id: string]: object } = {};
 

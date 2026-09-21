@@ -265,6 +265,52 @@ describe("CheckManifestGenerator", () => {
       expect(errors.length).to.equal(1);
     });
 
+    it("should report InvalidDropdownDefault for a dropdown default outside its options list", async () => {
+      // Regression: this branch used to emit InvalidSliderDefault (125) with
+      // an inverted predicate, so rule 126 had no emission path and valid
+      // dropdowns were the ones being flagged.
+      const item = createStubProjectItem({
+        json: createManifestJson({
+          settings: [
+            {
+              type: "dropdown",
+              text: "My Dropdown",
+              name: "setting1",
+              default: "missing_option",
+              options: [
+                { name: "opt1", text: "Option 1" },
+                { name: "opt2", text: "Option 2" },
+              ],
+            },
+          ],
+        }),
+      });
+      const results = await generator.validateManifest(item, { type: PackType.resource });
+      expect(results.filter((r) => r.generatorIndex === Tests.InvalidDropdownDefault.id).length).to.equal(1);
+      expect(results.filter((r) => r.generatorIndex === Tests.InvalidSliderDefault.id).length).to.equal(0);
+    });
+
+    it("should NOT report InvalidDropdownDefault when the default names one of the options", async () => {
+      const item = createStubProjectItem({
+        json: createManifestJson({
+          settings: [
+            {
+              type: "dropdown",
+              text: "My Dropdown",
+              name: "setting1",
+              default: "opt2",
+              options: [
+                { name: "opt1", text: "Option 1" },
+                { name: "opt2", text: "Option 2" },
+              ],
+            },
+          ],
+        }),
+      });
+      const results = await generator.validateManifest(item, { type: PackType.resource });
+      expect(results.filter((r) => r.generatorIndex === Tests.InvalidDropdownDefault.id).length).to.equal(0);
+    });
+
     it("should report InvalidSettingsMin for a slider where min is greater than max", async () => {
       const item = createStubProjectItem({
         json: createManifestJson({

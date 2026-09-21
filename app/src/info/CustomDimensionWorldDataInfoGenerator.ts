@@ -7,11 +7,18 @@ import IProjectInfoItemGenerator from "./IProjectItemInfoGenerator";
 import { ProjectItemType } from "../app/IProjectItemData";
 import MCWorld from "../minecraft/MCWorld";
 import { InfoItemType } from "./IInfoItemData";
+import { ProjectInfoSuite } from "./IProjectInfoData";
 import ProjectInfoSet from "./ProjectInfoSet";
 import ContentIndex from "../core/ContentIndex";
 import { IGeneratorOptions } from "./ProjectInfoSet";
 import Project from "../app/Project";
 import ProjectUtilities, { ProjectMetaCategory } from "../app/ProjectUtilities";
+import {
+  defineValidationRule,
+  IValidationRuleProvider,
+  ValidationRuleDefinition,
+  ValidationSeverity,
+} from "./tests/ValidationRuleDefinition";
 
 const CUSTOM_DIMENSION_ID_START = 1000;
 
@@ -25,11 +32,59 @@ export enum CustomDimensionWorldDataTest {
   nameIdMappingTableMissing = 101,
   vanillaDimensionChunkData = 102,
   unclaimedDimensionMappings = 103,
+  customDimensionCount = 104,
+  customDimensionChunkCount = 105,
 }
 
-export default class CustomDimensionWorldDataInfoGenerator implements IProjectInfoItemGenerator {
+const cdRule = (spec: {
+  ruleIndex: number;
+  name: string;
+  title: string;
+  severities: readonly ValidationSeverity[];
+}): ValidationRuleDefinition =>
+  defineValidationRule({
+    generatorId: "CDWORLDDATA",
+    ruleIndex: spec.ruleIndex,
+    name: spec.name,
+    title: spec.title,
+    severities: spec.severities,
+    suites: [ProjectInfoSuite.defaultInDevelopment],
+    source: {
+      file: "app/src/info/CustomDimensionWorldDataInfoGenerator.ts",
+      symbol: "CustomDimensionValidationRules",
+    },
+  });
+
+/**
+ * The CDWORLDDATA validation-rule inventory (Rules 101-103; 104/105 are
+ * informational counts).
+ */
+export const CustomDimensionValidationRules: readonly ValidationRuleDefinition[] = [
+  cdRule({
+    ruleIndex: CustomDimensionWorldDataTest.nameIdMappingTableMissing,
+    name: "nameIdMappingTableMissing",
+    title: "Name-ID Mapping Table Missing",
+    severities: [InfoItemType.error],
+  }),
+  cdRule({
+    ruleIndex: CustomDimensionWorldDataTest.vanillaDimensionChunkData,
+    name: "vanillaDimensionChunkData",
+    title: "Vanilla Dimension Chunk Data",
+    severities: [InfoItemType.error],
+  }),
+  cdRule({
+    ruleIndex: CustomDimensionWorldDataTest.unclaimedDimensionMappings,
+    name: "unclaimedDimensionMappings",
+    title: "Unclaimed Dimension Mappings",
+    severities: [InfoItemType.warning],
+  }),
+];
+
+export default class CustomDimensionWorldDataInfoGenerator implements IProjectInfoItemGenerator, IValidationRuleProvider {
   id = "CDWORLDDATA";
   title = "Custom Dimension World Data Validation";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = CustomDimensionValidationRules;
 
   /**
    * Per-project cache for {@link isAddOnContextForWorld}. Avoids re-running
@@ -93,6 +148,16 @@ export default class CustomDimensionWorldDataInfoGenerator implements IProjectIn
             "The DimensionNameIdTable contains name-ID mappings for dimensions that have no corresponding " +
             "chunk data in the LevelDB. This may indicate incomplete cleanup or leftover development data.",
         };
+      case CustomDimensionWorldDataTest.customDimensionCount:
+        return {
+          title: "Custom Dimension Count",
+          description: "The number of distinct custom dimensions with persisted LevelDB chunk data.",
+        };
+      case CustomDimensionWorldDataTest.customDimensionChunkCount:
+        return {
+          title: "Custom Dimension Chunk Count",
+          description: "The total number of unique LevelDB chunks stored across custom dimensions.",
+        };
       default:
         return undefined;
     }
@@ -102,6 +167,23 @@ export default class CustomDimensionWorldDataInfoGenerator implements IProjectIn
     const customDimensionErrors = infoSet.getCount(this.id, CustomDimensionWorldDataTest.vanillaDimensionChunkData);
     const nameIdTableMissing = infoSet.getCount(this.id, CustomDimensionWorldDataTest.nameIdMappingTableMissing);
     const unclaimedMappings = infoSet.getCount(this.id, CustomDimensionWorldDataTest.unclaimedDimensionMappings);
+    const customDimensionCount = infoSet.getSummedDataValue(
+      this.id,
+      CustomDimensionWorldDataTest.customDimensionCount
+    );
+    const customDimensionChunkCount = infoSet.getSummedDataValue(
+      this.id,
+      CustomDimensionWorldDataTest.customDimensionChunkCount
+    );
+
+    if (customDimensionCount > 0) {
+      info.customDimensionCount = customDimensionCount;
+      info.customDimensionChunkCount = customDimensionChunkCount;
+
+      if (!info.capabilities.includes("customDimensions")) {
+        info.capabilities.push("customDimensions");
+      }
+    }
 
     // Only add summary fields when there are actual findings.
     // This avoids adding zero-value fields to validation output for content
@@ -155,8 +237,32 @@ export default class CustomDimensionWorldDataInfoGenerator implements IProjectIn
       return items;
     }
 
-    const hasCustomDimChunks = Array.from(dimensionIds).some((id) => id >= CUSTOM_DIMENSION_ID_START);
+    const customDimensionIds = Array.from(dimensionIds).filter((id) => id >= CUSTOM_DIMENSION_ID_START);
+    const hasCustomDimChunks = customDimensionIds.length > 0;
     const vanillaDimIds = Array.from(dimensionIds).filter((id) => id < CUSTOM_DIMENSION_ID_START);
+
+    if (hasCustomDimChunks) {
+      items.push(
+        new ProjectInfoItem(
+          InfoItemType.info,
+          this.id,
+          CustomDimensionWorldDataTest.customDimensionCount,
+          "Custom dimensions with persisted chunk data",
+          projectItem,
+          customDimensionIds.length
+        )
+      );
+      items.push(
+        new ProjectInfoItem(
+          InfoItemType.info,
+          this.id,
+          CustomDimensionWorldDataTest.customDimensionChunkCount,
+          "Chunks stored across custom dimensions",
+          projectItem,
+          dimensionInfo.customDimensionChunkCount
+        )
+      );
+    }
 
     // Rule 102: Vanilla dimension chunk data found in LevelDB.
     // Only meaningful when this project is shaped like an add-on that bundles

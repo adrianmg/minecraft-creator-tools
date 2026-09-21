@@ -11,6 +11,7 @@ import ContentIndex from "../../../core/ContentIndex";
 import AnimationResourceDefinition from "../../../minecraft/AnimationResourceDefinition";
 import ProjectInfoUtilities from "../../ProjectInfoUtilities";
 import { AnimationResourceInfoGeneratorTest } from "./AnimationResourceInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { AnimationResourceInfoGeneratorTest };
 
@@ -19,9 +20,12 @@ export { AnimationResourceInfoGeneratorTest };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/resourceanimation.form.json} for topic definitions
  */
-export default class AnimationResourceInfoGenerator implements IProjectInfoGenerator {
+export default class AnimationResourceInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "RESOURCEANIMATION";
   title = "Resource Animation";
+
+  // Indexes 101/102 are featureAggregate roll-ups; this generator emits no validation severities.
+  readonly validationRules: readonly ValidationRuleDefinition[] = [];
 
   performAddOnValidations = false;
 

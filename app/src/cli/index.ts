@@ -576,12 +576,11 @@ if (!isTestEnvironment && !errorLevel) {
         capturedTaskType === TaskType.view ||
         capturedTaskType === TaskType.edit;
 
-      if (isLongRunningCommand && !options.once) {
-        hookInput();
-      }
+      const cleanupInput = isLongRunningCommand && !options.once ? hookInput() : undefined;
 
       // Execute via the modular command registry
       await executeViaRegistry(options);
+      cleanupInput?.();
 
       // Exit unless this is a long-running server command (those handle their own lifecycle)
       if (!isLongRunningCommand) {
@@ -900,10 +899,10 @@ async function loadProjects() {
   projectStarts.push(mainProject);
 }
 
-function hookInput() {
+function hookInput(): () => void {
   process.stdin.setEncoding("utf-8");
 
-  process.stdin.on("data", async function (data: string) {
+  const onData = async function (data: string) {
     try {
       if (data.startsWith("exit") || data.startsWith("stop")) {
         await doExit();
@@ -918,7 +917,13 @@ function hookInput() {
       Log.debug("Error during exit: " + err);
       process.exit(1);
     }
-  });
+  };
+
+  process.stdin.on("data", onData);
+  return () => {
+    process.stdin.off("data", onData);
+    process.stdin.pause();
+  };
 }
 
 // setPasscode is called from main IIFE - keep this utility

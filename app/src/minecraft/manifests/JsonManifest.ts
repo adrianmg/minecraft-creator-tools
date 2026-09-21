@@ -14,7 +14,7 @@ const HeaderSchema = z.object({
   min_engine_version: VersionSchema.optional(),
   max_engine_version: VersionSchema.optional(),
   platform_locked: z.boolean().optional(),
-  packScope: z.string().optional(),
+  pack_scope: z.string().optional(),
 });
 const ModuleSchema = z.array(
   z.object({

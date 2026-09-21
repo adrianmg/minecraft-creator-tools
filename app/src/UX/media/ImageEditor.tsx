@@ -67,6 +67,13 @@ interface IImageEditorProps extends WithLocalizationProps {
   creatorTools: CreatorTools;
   onUpdateContent?: (newContent: Uint8Array) => void;
   onCommit?: (newContent: Uint8Array) => void;
+  /**
+   * Optional controls rendered at the trailing end of the toolbar, after the
+   * editing tools. Hosts use this for mode switches (e.g. ImageManager's
+   * "Preview" toggle) so they sit in the toolbar row instead of floating over
+   * it and covering the first tool button.
+   */
+  toolbarEndContent?: React.ReactNode;
 }
 
 interface IImageEditorState {
@@ -1389,6 +1396,7 @@ class ImageEditor extends Component<IImageEditorProps, IImageEditorState> {
               />
             </Button>
           </Stack>
+          {this.props.toolbarEndContent && <div className="ie-toolBarEnd">{this.props.toolbarEndContent}</div>}
         </div>
         <div className="ie-contents" ref={this.imageCanvasElt}></div>
       </div>

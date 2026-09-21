@@ -4,16 +4,13 @@
  * This module stops the MCT server after all tests have completed.
  */
 import * as fs from "fs";
-import * as path from "path";
-
-// Files where the port and slot were stored
-const PORT_FILE = path.resolve(__dirname, "../../debugoutput/.serverui-test-port");
-const SLOT_FILE = path.resolve(__dirname, "../../debugoutput/.serverui-test-slot");
+import { getServerStateFiles, ServerUiTestStateNamespace } from "./serverui-test-state";
 
 /**
  * Global teardown function called by Playwright after all tests.
  */
-async function globalTeardown(): Promise<void> {
+export async function stopServer(namespace: ServerUiTestStateNamespace = "full"): Promise<void> {
+  const { portFile, slotFile } = getServerStateFiles(namespace);
   console.log("Stopping MCT server...");
 
   // Get the server process from global
@@ -43,11 +40,11 @@ async function globalTeardown(): Promise<void> {
 
   // Clean up the port and slot files
   try {
-    if (fs.existsSync(PORT_FILE)) {
-      fs.unlinkSync(PORT_FILE);
+    if (fs.existsSync(portFile)) {
+      fs.unlinkSync(portFile);
     }
-    if (fs.existsSync(SLOT_FILE)) {
-      fs.unlinkSync(SLOT_FILE);
+    if (fs.existsSync(slotFile)) {
+      fs.unlinkSync(slotFile);
     }
   } catch {
     // Ignore cleanup errors
@@ -57,6 +54,10 @@ async function globalTeardown(): Promise<void> {
   global.__MCT_SERVER_PROCESS__ = undefined;
   global.__MCT_SERVER_PORT__ = undefined;
   global.__MCT_SERVER_SLOT__ = undefined;
+}
+
+async function globalTeardown(): Promise<void> {
+  await stopServer("full");
 }
 
 export default globalTeardown;

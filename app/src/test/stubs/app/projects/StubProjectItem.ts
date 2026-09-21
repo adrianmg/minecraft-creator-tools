@@ -35,7 +35,9 @@ export interface StubProjectItemOptions {
    * Override item.getPack() — used by CheckSkinPackJsonGenerator.
    * Return the pack this item belongs to (or null to simulate a missing pack).
    */
-  getPack?: () => Promise<Pack | null>; /** Override item.getCommunitySchemaPath() — used by CommunitySchemaItemInfoGenerator. */
+  getPack?: () => Promise<Pack | null>;
+  /** Override item.getPackRelativePath() — used by generators that match canonical pack locations. */
+  getPackRelativePath?: () => Promise<string | undefined>; /** Override item.getCommunitySchemaPath() — used by CommunitySchemaItemInfoGenerator. */
   getCommunitySchemaPath?: () =>
     | string
     | null
@@ -74,6 +76,7 @@ export function createStubProjectItem(options: StubProjectItemOptions = {}): Pro
     primaryFile: options.file ?? null,
     getFolder: options.getFolder ?? (() => null),
     getPack: options.getPack ?? (async () => null),
+    getPackRelativePath: options.getPackRelativePath ?? (async () => undefined),
     getCommunitySchemaPath: options.getCommunitySchemaPath ?? (() => null),
     getFormPath: options.getFormPath ?? (() => undefined),
     getOfficialSchemaPath: options.getOfficialSchemaPath ?? (() => undefined),

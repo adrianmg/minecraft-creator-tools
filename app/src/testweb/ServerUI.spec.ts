@@ -23,10 +23,11 @@ import {
 } from "./WebTestUtilities";
 import * as fs from "fs";
 import * as path from "path";
+import { getServerStateFiles } from "./serverui-test-state";
+import { MockDebuggerFixture } from "./MockDebuggerFixture";
 
 // Port and slot files written by globalSetup
-const PORT_FILE = path.resolve(__dirname, "../../debugoutput/.serverui-test-port");
-const SLOT_FILE = path.resolve(__dirname, "../../debugoutput/.serverui-test-slot");
+const { portFile: PORT_FILE, slotFile: SLOT_FILE } = getServerStateFiles("full");
 
 /**
  * Get the server port from the file written by globalSetup.
@@ -95,6 +96,10 @@ function ensureScreenshotDir(): void {
  * Saves a screenshot with a descriptive name.
  */
 async function saveScreenshot(page: Page, name: string): Promise<void> {
+  if (process.env.MCT_SERVER_UI_SCREENSHOTS !== "1") {
+    return;
+  }
+
   ensureScreenshotDir();
   const screenshotPath = path.join(SCREENSHOT_DIR, `server-ui-${name}.png`);
   await page.screenshot({ path: screenshotPath, fullPage: true });
@@ -111,12 +116,9 @@ async function waitForServerReady(page: Page, maxRetries: number = 10): Promise<
 
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const response = await page.goto(serverUrl, { timeout: 5000 });
+      const response = await page.goto(serverUrl, { timeout: 5000, waitUntil: "domcontentloaded" });
       if (response && response.ok()) {
-        // Wait for DOM to be ready - don't use networkidle as the server has constant heartbeat requests
-        await page.waitForLoadState("domcontentloaded");
-        // Brief wait for React to render
-        await page.waitForTimeout(500);
+        await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 5000 });
         return true;
       }
     } catch (e) {
@@ -125,6 +127,18 @@ async function waitForServerReady(page: Page, maxRetries: number = 10): Promise<
     }
   }
   return false;
+}
+
+async function waitForAuthenticatedUi(page: Page): Promise<void> {
+  await expect(page.locator('input[type="password"]').first()).toBeHidden({ timeout: 30000 });
+}
+
+async function waitForLoginInput(page: Page): Promise<void> {
+  await page
+    .locator('input[type="password"]')
+    .first()
+    .waitFor({ state: "attached", timeout: 10000 })
+    .catch(() => {});
 }
 
 test.describe("MCTools Server UI", () => {
@@ -178,9 +192,6 @@ test.describe("MCTools Server UI", () => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
 
-      // Wait for the page to fully render
-      await page.waitForTimeout(2000);
-
       // The login interface should show "Login" header when in webserver mode
       // Based on RemoteServerSettingsPanel.tsx: "Login" when isWebServer is true
       const loginHeader = page.locator("text=Login");
@@ -203,8 +214,6 @@ test.describe("MCTools Server UI", () => {
     test("should display the passcode input field", async ({ page }) => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
-
-      await page.waitForTimeout(2000);
 
       // Look for the passcode input field
       // Based on RemoteServerSettingsPanel.tsx: Input with type="password" and aria-label="Server Passcode"
@@ -236,8 +245,6 @@ test.describe("MCTools Server UI", () => {
     test("should allow entering a passcode", async ({ page }) => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
-
-      await page.waitForTimeout(2000);
 
       // Find the password input
       const passcodeInput = page.locator('input[type="password"]').first();
@@ -307,8 +314,6 @@ test.describe("MCTools Server UI", () => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
 
-      await page.waitForTimeout(2000);
-
       // Find the password input
       const passcodeInput = page.locator('input[type="password"]').first();
 
@@ -335,8 +340,7 @@ test.describe("MCTools Server UI", () => {
       if (buttonExists) {
         await connectButton.click();
 
-        // Wait longer for authentication to complete and status to update
-        await page.waitForTimeout(5000);
+        await waitForAuthenticatedUi(page);
 
         await saveScreenshot(page, "auth-after-connect-click");
 
@@ -358,7 +362,6 @@ test.describe("MCTools Server UI", () => {
         }
 
         // Verify the password input is gone (indicates successful login)
-        await page.waitForTimeout(1000);
         const passcodeInputAfterLogin = page.locator('input[type="password"]').first();
         const passwordStillVisible = await passcodeInputAfterLogin.isVisible().catch(() => false);
 
@@ -404,8 +407,6 @@ test.describe("MCTools Server UI", () => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
 
-      await page.waitForTimeout(2000);
-
       // Find the password input
       const passcodeInput = page.locator('input[type="password"]').first();
 
@@ -429,7 +430,7 @@ test.describe("MCTools Server UI", () => {
       }
 
       await connectButton.click();
-      await page.waitForTimeout(3000);
+      await waitForAuthenticatedUi(page);
       await saveScreenshot(page, "heartbeat-after-connect");
 
       // Wait for heartbeat cycle (the RemoteMinecraft polls every 500ms initially)
@@ -463,8 +464,6 @@ test.describe("MCTools Server UI", () => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
 
-      await page.waitForTimeout(2000);
-
       // Find the password input
       const passcodeInput = page.locator('input[type="password"]').first();
 
@@ -487,7 +486,7 @@ test.describe("MCTools Server UI", () => {
 
       if (buttonExists) {
         await connectButton.click();
-        await page.waitForTimeout(3000);
+        await expect(page.locator("text=Login failed")).toBeVisible({ timeout: 10000 });
 
         await saveScreenshot(page, "error-test-after-connect");
 
@@ -593,7 +592,7 @@ test.describe("MCTools Server UI", () => {
         return false;
       }
 
-      await page.waitForTimeout(2000);
+      await waitForLoginInput(page);
 
       // Check if already logged in (no password input)
       const passcodeInput = page.locator('input[type="password"]').first();
@@ -618,12 +617,8 @@ test.describe("MCTools Server UI", () => {
 
       await connectButton.click();
 
-      // Wait for authentication to complete
-      await page.waitForTimeout(5000);
-
-      // Check if password input is gone (indicates successful login)
-      const passwordStillVisible = await passcodeInput.isVisible().catch(() => false);
-      return !passwordStillVisible;
+      await waitForAuthenticatedUi(page);
+      return true;
     }
 
     test("should show WorldView map area after successful login", async ({ page }) => {
@@ -780,8 +775,6 @@ test.describe("MCTools Server UI", () => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
 
-      await page.waitForTimeout(3000);
-
       // Filter out expected/ignorable errors
       const criticalErrors = consoleErrors.filter((error) => !isIgnorableMessage(error.error));
 
@@ -816,8 +809,6 @@ test.describe("MCTools Server UI", () => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
 
-      await page.waitForTimeout(2000);
-
       // Check if we need to log in
       const passcodeInput = page.locator('input[type="password"]').first();
       const needsLogin = (await passcodeInput.count()) > 0;
@@ -828,13 +819,11 @@ test.describe("MCTools Server UI", () => {
         const connectButton = page.locator('button:has-text("Connect")').first();
         if (await connectButton.isVisible().catch(() => false)) {
           await connectButton.click();
-          await page.waitForTimeout(5000);
+          await waitForAuthenticatedUi(page);
         }
       }
 
       // Wait for the server to connect and UI to stabilize
-      await page.waitForTimeout(3000);
-
       await saveScreenshot(page, "slot-selector-toolbar");
 
       // Verify the slot selector exists in the host toolbar
@@ -855,8 +844,6 @@ test.describe("MCTools Server UI", () => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
 
-      await page.waitForTimeout(2000);
-
       // Log in first
       const passcodeInput = page.locator('input[type="password"]').first();
       const needsLogin = (await passcodeInput.count()) > 0;
@@ -867,12 +854,9 @@ test.describe("MCTools Server UI", () => {
         const connectButton = page.locator('button:has-text("Connect")').first();
         if (await connectButton.isVisible().catch(() => false)) {
           await connectButton.click();
-          await page.waitForTimeout(5000);
+          await waitForAuthenticatedUi(page);
         }
       }
-
-      await page.waitForTimeout(3000);
-      await saveScreenshot(page, "settings-01-before-click");
 
       // Find and click the gear icon button
       const gearButton = page.locator(".mid-slotSettingsButton");
@@ -881,8 +865,6 @@ test.describe("MCTools Server UI", () => {
 
       if (gearButtonExists) {
         await gearButton.click();
-        await page.waitForTimeout(1000);
-        await saveScreenshot(page, "settings-02-dialog-open");
 
         // Check for dialog content
         const dialogContent = page.locator(".mid-slotSettingsContent");
@@ -924,6 +906,7 @@ test.describe("MCTools Server UI", () => {
      * Helper to log in to the server UI.
      */
     async function loginToServer(page: Page) {
+      await waitForLoginInput(page);
       const passcodeInput = page.locator('input[type="password"]').first();
       const needsLogin = (await passcodeInput.count()) > 0;
 
@@ -933,8 +916,7 @@ test.describe("MCTools Server UI", () => {
         const connectButton = page.locator('button:has-text("Connect")').first();
         if (await connectButton.isVisible().catch(() => false)) {
           await connectButton.click();
-          // Wait for connection to establish
-          await page.waitForTimeout(5000);
+          await waitForAuthenticatedUi(page);
         }
       }
     }
@@ -991,7 +973,6 @@ test.describe("MCTools Server UI", () => {
     test("should display debug stats panel when connected", async ({ page }) => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
-      await page.waitForTimeout(2000);
 
       await loginToServer(page);
       await page.waitForTimeout(2000);
@@ -1026,7 +1007,6 @@ test.describe("MCTools Server UI", () => {
     test("should show debug connection status", async ({ page }) => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
-      await page.waitForTimeout(2000);
 
       await loginToServer(page);
       await page.waitForTimeout(3000);
@@ -1068,7 +1048,6 @@ test.describe("MCTools Server UI", () => {
     test("should display tick counter when receiving stats", async ({ page }) => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
-      await page.waitForTimeout(2000);
 
       await loginToServer(page);
       await page.waitForTimeout(3000);
@@ -1099,7 +1078,6 @@ test.describe("MCTools Server UI", () => {
     test("should show debug stats categories when data is flowing", async ({ page }) => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
-      await page.waitForTimeout(2000);
 
       await loginToServer(page);
       // Wait longer to allow stats to start flowing
@@ -1180,10 +1158,332 @@ test.describe("MCTools Server UI", () => {
       await saveScreenshot(page, "debug-06-api-status");
     });
 
+    test("should include v10 diagnostics fields in HTTP API status", async ({ page }) => {
+      const isReady = await waitForServerReady(page);
+      expect(isReady).toBe(true);
+
+      const serverUrl = getServerUrl();
+      const slot = getServerSlot();
+      const statusUrl = `${serverUrl}/api/${slot}/status`;
+
+      const fetchSlotConfig = async () => {
+        const response = await page.request.get(statusUrl, {
+          headers: { mctpc: TEST_ADMIN_PASSCODE },
+        });
+        // The v10 diagnostics payload is part of the status contract - a
+        // non-200 response or a missing slotConfig is a regression, not a
+        // skippable condition.
+        expect(response.status()).toBe(200);
+        const data = await response.json();
+        expect(data.slotConfig).toBeDefined();
+        return data.slotConfig;
+      };
+
+      let slotConfig = await fetchSlotConfig();
+
+      // Fields served regardless of session state (getDebugSlotConfig).
+      expect(typeof slotConfig.debuggerEnabled).toBe("boolean");
+      expect(typeof slotConfig.debuggerStreamingEnabled).toBe("boolean");
+      expect(typeof slotConfig.debugConnectionState).toBe("string");
+      // Ownership must always be reported (and classified) so the UI can
+      // explain single-client debugger ownership (MCT vs VS Code).
+      expect(["attachedByMct", "unattached", "attachedExternally", "unknown"]).toContain(slotConfig.debugOwnership);
+
+      console.log(
+        `debugConnectionState: ${slotConfig.debugConnectionState}, debugOwnership: ${slotConfig.debugOwnership}`
+      );
+
+      // The standard setup starts only the MCT HTTP server - no BDS, no
+      // debugger - so left alone the session stays disconnected and the
+      // connected/v9+ payload would never be exercised. Drive a REAL
+      // connected v10 session through the production attach path instead:
+      // listen on the slot's debug port with a mock Minecraft debug listener
+      // and ask the server to attach to it. If a session is already connected
+      // (manual run with a live BDS), assert against that session as-is - its
+      // debug port is occupied, so the fixture cannot (and need not) start.
+      const fixtureDescriptors = [
+        {
+          name: "server_timing",
+          stat_group_id: "server_tick_timings",
+          data_source: "server",
+          display_type: "line_chart",
+          title: "Server Timing",
+        },
+      ];
+      // DedicatedServer.debugPort: base Minecraft port (19132 + slot * 32) + 12.
+      const fixture = new MockDebuggerFixture({
+        port: 19132 + slot * 32 + 12,
+        protocolVersion: 10,
+        descriptors: fixtureDescriptors,
+      });
+      const fixtureDriven = slotConfig.debugConnectionState !== "connected";
+
+      try {
+        if (fixtureDriven) {
+          await fixture.start();
+
+          const reattach = await page.request.post(`${serverUrl}/api/${slot}/debug/reattach`, {
+            headers: { mctpc: TEST_ADMIN_PASSCODE },
+          });
+          expect(reattach.status()).toBe(200);
+          const reattachResult = await reattach.json();
+          console.log(`Reattach result: ${JSON.stringify(reattachResult)}`);
+          expect(reattachResult.success, "the debug client must attach to the mock debugger fixture").toBe(true);
+        }
+
+        // A connected session is now REQUIRED, not conditional - a complete
+        // attachment regression must fail this test, not skip it.
+        for (let attempt = 0; attempt < 10 && slotConfig.debugConnectionState !== "connected"; attempt++) {
+          await page.waitForTimeout(1000);
+          slotConfig = await fetchSlotConfig();
+        }
+        expect(slotConfig.debugConnectionState, "the debug session must reach the connected state").toBe("connected");
+
+        // A connected session must include the negotiated facts the panel
+        // hydrates from.
+        expect(typeof slotConfig.debugProtocolVersion).toBe("number");
+        expect(slotConfig.debugProtocolVersion).toBeGreaterThanOrEqual(9);
+        expect(typeof slotConfig.debugHost).toBe("string");
+        expect(typeof slotConfig.debugPort).toBe("number");
+        expect(slotConfig.debugCapabilities).toBeDefined();
+        expect(slotConfig.debugOwnership).toBe("attachedByMct");
+        console.log(
+          `protocol v${slotConfig.debugProtocolVersion}, endpoint ${slotConfig.debugHost}:${slotConfig.debugPort}`
+        );
+
+        if (fixtureDriven) {
+          // The fixture negotiated v10 on the slot's debug port - the served
+          // payload must reflect exactly that negotiation.
+          expect(slotConfig.debugProtocolVersion).toBe(10);
+          expect(slotConfig.debugPort).toBe(fixture.port);
+          expect(slotConfig.debugCapabilities.supportsEmptyTabs).toBe(true);
+          expect(slotConfig.debugTargetModuleUuid).toBe("serverui-test-module-uuid");
+        }
+
+        // v9+ negotiates a diagnostics schema; it arrives asynchronously
+        // after the handshake, so poll the API briefly before requiring it.
+        let schema = slotConfig.debugSchema;
+        for (let attempt = 0; attempt < 10 && schema === undefined; attempt++) {
+          await page.waitForTimeout(1000);
+          schema = (await fetchSlotConfig()).debugSchema;
+        }
+        expect(Array.isArray(schema), "a connected v9+ session must serve its diagnostics schema").toBe(true);
+        console.log(`debugSchema: ${schema.length} descriptors`);
+
+        if (fixtureDriven) {
+          expect(schema).toEqual(fixtureDescriptors);
+
+          // Stats streamed by the fixture must surface as the last stat tick.
+          let lastStatTick = slotConfig.debugLastStatTick;
+          for (let attempt = 0; attempt < 10 && !(lastStatTick > 0); attempt++) {
+            await page.waitForTimeout(1000);
+            lastStatTick = (await fetchSlotConfig()).debugLastStatTick;
+          }
+          expect(lastStatTick, "streamed StatEvent2 ticks must surface in the status payload").toBeGreaterThan(0);
+        }
+      } finally {
+        await fixture.stop();
+      }
+
+      if (fixtureDriven) {
+        // Losing the debugger connection must be detected and reported, and
+        // this also hands subsequent tests a settled (disconnected) session
+        // instead of a half-torn-down one.
+        for (let attempt = 0; attempt < 10 && slotConfig.debugConnectionState === "connected"; attempt++) {
+          await page.waitForTimeout(1000);
+          slotConfig = await fetchSlotConfig();
+        }
+        expect(slotConfig.debugConnectionState, "the status payload must reflect the debugger disconnect").not.toBe(
+          "connected"
+        );
+      }
+    });
+
+    test("should render v10 header info and schema tabs or legacy categories", async ({ page }) => {
+      // This test must reach the connected schema-tab assertions even when it
+      // runs standalone, where the sidebar only appears after BDS finishes
+      // booting mid-test - allow for that boot on top of the UI assertions.
+      test.setTimeout(180000);
+
+      const isReady = await waitForServerReady(page);
+      expect(isReady).toBe(true);
+
+      const serverUrl = getServerUrl();
+      const slot = getServerSlot();
+
+      const fetchSlotConfig = async () => {
+        const response = await page.request.get(`${serverUrl}/api/${slot}/status`, {
+          headers: { mctpc: TEST_ADMIN_PASSCODE },
+        });
+        expect(response.status()).toBe(200);
+        const data = await response.json();
+        expect(data.slotConfig).toBeDefined();
+        return data.slotConfig;
+      };
+
+      let slotConfig = await fetchSlotConfig();
+
+      // The standard setup runs no BDS, so left alone the session is
+      // disconnected and the connected schema-tab assertions would be dead
+      // code (the preceding REST test tears its fixture down before this test
+      // runs). This test therefore OWNS a live fixture through the UI
+      // assertions: it drives a real connected v10 session and REQUIRES the
+      // schema-tab rendering - the browser's production WebSocket-to-panel
+      // path, not just REST serialization. A manual run with a live BDS
+      // session asserts against that session as-is; its debug port is
+      // occupied, so the fixture cannot (and need not) start. Two descriptors
+      // so the tab-switching assertions always execute.
+      const fixture = new MockDebuggerFixture({
+        port: 19132 + slot * 32 + 12,
+        protocolVersion: 10,
+        descriptors: [
+          {
+            name: "server_timing",
+            stat_group_id: "server_tick_timings",
+            data_source: "server",
+            display_type: "line_chart",
+            title: "Server Timing",
+          },
+          {
+            name: "handle_counts",
+            stat_group_id: "handle_counts",
+            data_source: "server",
+            display_type: "table",
+            title: "Handle Counts",
+          },
+        ],
+      });
+      const fixtureDriven = slotConfig.debugConnectionState !== "connected";
+
+      try {
+        if (fixtureDriven) {
+          await fixture.start();
+
+          const reattach = await page.request.post(`${serverUrl}/api/${slot}/debug/reattach`, {
+            headers: { mctpc: TEST_ADMIN_PASSCODE },
+          });
+          expect(reattach.status()).toBe(200);
+          const reattachResult = await reattach.json();
+          console.log(`Reattach result: ${JSON.stringify(reattachResult)}`);
+          expect(reattachResult.success, "the debug client must attach to the mock debugger fixture").toBe(true);
+        }
+
+        // A connected session is REQUIRED before any UI assertion - a
+        // disconnected panel must fail this test, not pass it.
+        for (let attempt = 0; attempt < 10 && slotConfig.debugConnectionState !== "connected"; attempt++) {
+          await page.waitForTimeout(1000);
+          slotConfig = await fetchSlotConfig();
+        }
+        expect(slotConfig.debugConnectionState, "the debug session must reach the connected state").toBe("connected");
+        const protocolVersion = slotConfig.debugProtocolVersion ?? 0;
+        console.log(`Negotiated debug session: protocol v${protocolVersion}, fixtureDriven=${fixtureDriven}`);
+
+        await loginToServer(page);
+        await page.waitForTimeout(2000);
+
+        // The Stats tab is REQUIRED - without it none of the diagnostics
+        // assertions below run and the test would pass vacuously. The sidebar
+        // renders once the slot's server reaches its started state, so retry
+        // clickStatsTab's 30-second wait to cover a BDS boot in progress.
+        let statsTabOpened = false;
+        for (let attempt = 0; attempt < 4 && !statsTabOpened; attempt++) {
+          statsTabOpened = await clickStatsTab(page);
+        }
+        expect(statsTabOpened, "the Stats tab must open to assert the diagnostics panel").toBe(true);
+
+        await saveScreenshot(page, "debug-07-v10-diagnostics");
+
+        // Depending on the negotiated protocol version, diagnostics render
+        // either as schema-driven tabs (v9+/v10 SchemaEvent) or legacy
+        // categories. The fixture always negotiates v10; pre-v9 is reachable
+        // only against a real pre-v9 BDS session in a manual run.
+        const schemaTabs = page.locator(".dsp-schema-tabs [role='tab']");
+        const categoryTitles = page.locator(".dsp-category-title");
+        const emptyState = page.locator(".dsp-empty");
+
+        if (protocolVersion >= 9) {
+          // v9+ negotiated: SchemaEvent-driven tabs are the required
+          // rendering. They appear as soon as the schema arrives (before any
+          // stats), so a loading or empty state here means schema negotiation
+          // or the WebSocket-to-panel path broke.
+          await expect(schemaTabs.first(), "a connected v9+ session must render schema-driven tabs").toBeVisible({
+            timeout: 15000,
+          });
+          const tabCount = await schemaTabs.count();
+          console.log(`Schema-driven tabs: ${tabCount}`);
+
+          if (fixtureDriven) {
+            expect(tabCount, "one schema tab per fixture descriptor").toBe(2);
+          }
+
+          // Header info chips: module, endpoint, ownership (present when
+          // connected).
+          const infoChips = page.locator(".dsp-info-chip");
+          const chipCount = await infoChips.count();
+          expect(chipCount, "a connected session must render header info chips").toBeGreaterThan(0);
+          for (let i = 0; i < chipCount; i++) {
+            console.log(`  Chip ${i + 1}: ${await infoChips.nth(i).textContent()}`);
+          }
+
+          if (fixtureDriven) {
+            // Stats stream over the production WebSocket: the tick display
+            // must appear and ADVANCE while the fixture keeps emitting
+            // StatEvent2 - a one-shot hydration snapshot cannot satisfy this.
+            const tickDisplay = page.locator(".dsp-tick");
+            await expect(tickDisplay.first()).toBeVisible({ timeout: 15000 });
+            const tickBefore = await tickDisplay.first().textContent();
+            await expect(async () => {
+              expect(await tickDisplay.first().textContent(), "streamed stats must advance the tick display").not.toBe(
+                tickBefore
+              );
+            }).toPass({ timeout: 15000 });
+          }
+
+          // Exercise tab switching and aria wiring.
+          if (tabCount > 1) {
+            await schemaTabs.nth(1).click();
+            await page.waitForTimeout(500);
+
+            const tabPanel = page.locator("[role='tabpanel']");
+            expect(await tabPanel.count()).toBeGreaterThan(0);
+            console.log(`Tab panel content after switch: ${(await tabPanel.first().textContent())?.substring(0, 120)}`);
+          }
+        } else {
+          // Pre-v9: legacy hardcoded categories once stats flow; until then
+          // the panel must say "Waiting for stats" explicitly. Schema tabs
+          // cannot exist on a session that never negotiated a schema.
+          expect(await schemaTabs.count()).toBe(0);
+
+          const categoryCount = await categoryTitles.count();
+          console.log(`Legacy stat categories: ${categoryCount}`);
+          if (categoryCount === 0) {
+            await expect(emptyState.first()).toContainText("Waiting for stats");
+          }
+        }
+      } finally {
+        await fixture.stop();
+      }
+
+      if (fixtureDriven) {
+        // Losing the debugger must surface in the UI over the live WebSocket:
+        // the panel explains the state explicitly and no diagnostics from the
+        // ended session may linger. This also hands subsequent tests a
+        // settled (disconnected) session instead of a half-torn-down one.
+        const emptyState = page.locator(".dsp-empty");
+        await expect(emptyState.first()).toBeVisible({ timeout: 15000 });
+        const stateText = (await emptyState.first().textContent()) ?? "";
+        console.log(`Post-teardown state message: ${stateText}`);
+        expect(stateText).toMatch(
+          /Debugger not connected|Connecting to debugger|Another debugger owns this endpoint|Diagnostics are disabled/
+        );
+        expect(await page.locator(".dsp-schema-tabs [role='tab']").count()).toBe(0);
+        await saveScreenshot(page, "debug-07b-after-fixture-teardown");
+      }
+    });
+
     test("should handle debug reconnection gracefully", async ({ page }) => {
       const isReady = await waitForServerReady(page);
       expect(isReady).toBe(true);
-      await page.waitForTimeout(2000);
 
       await loginToServer(page);
       await page.waitForTimeout(3000);

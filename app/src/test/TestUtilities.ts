@@ -78,6 +78,8 @@ const excludeDerivedAttributes = [
   "testFailSummary",
   "summary",
   "customDimensionErrors",
+  "customDimensionCount",
+  "customDimensionChunkCount",
   "nameIdTableMissing",
   "unclaimedMappings",
   // Summary fields contributed by generators that may be excluded via excludeTestIds.
@@ -518,7 +520,12 @@ export async function ensureReportJsonMatchesScenario(
 
   assert(
     isEqual,
-    "report.json file '" + scenarioFile.fullPath + "' does not match for scenario '" + scenarioName + "'" + diffDetail
+    "report.json file '" +
+      scenarioFile.fullPath +
+      "' does not match for scenario '" +
+      scenarioName +
+      "'" +
+      diffDetail.substring(0, 200)
   );
 }
 
