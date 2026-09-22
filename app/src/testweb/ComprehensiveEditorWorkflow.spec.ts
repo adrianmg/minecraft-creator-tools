@@ -16,28 +16,40 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
   const consoleWarnings: { url: string; error: string }[] = [];
 
   async function expectFocusedDashboard(page: Parameters<typeof preferBrowserStorageInProjectDialog>[0]) {
-    expect(await waitForEditorReady(page, 15000)).toBe(true);
+    expect(await waitForEditorReady(page, 60000)).toBe(true);
   }
 
   function getDashboardAddonExportButton(page: Parameters<typeof preferBrowserStorageInProjectDialog>[0]) {
-    return page.locator("button").filter({ hasText: /Install in Minecraft \(\.mcaddon\)/i }).first();
+    return page
+      .locator("button")
+      .filter({ hasText: /Install in Minecraft \(\.mcaddon\)/i })
+      .first();
   }
 
   function getDashboardFolderExportButton(page: Parameters<typeof preferBrowserStorageInProjectDialog>[0]) {
-    return page.locator("button").filter({ hasText: /Save project files to a folder/i }).first();
+    return page
+      .locator("button")
+      .filter({ hasText: /Save project files to a folder/i })
+      .first();
   }
 
   function getDashboardFlatWorldButton(page: Parameters<typeof preferBrowserStorageInProjectDialog>[0]) {
-    return page.locator("button").filter({ hasText: /flat test world/i }).first();
+    return page
+      .locator("button")
+      .filter({ hasText: /flat test world/i })
+      .first();
   }
 
   function getDashboardProjectWorldButton(page: Parameters<typeof preferBrowserStorageInProjectDialog>[0]) {
-    return page.locator("button").filter({ hasText: /regular project world/i }).first();
+    return page
+      .locator("button")
+      .filter({ hasText: /regular project world/i })
+      .first();
   }
 
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
-    await page.waitForLoadState("networkidle");
+    await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
 
     page.on("console", (msg: ConsoleMessage) => {
       processMessage(msg, page, consoleErrors, consoleWarnings);
@@ -57,7 +69,7 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     await addOnStarterNewButton.click();
 
     // Wait for the project creation dialog to appear
-    await page.waitForTimeout(1000);
+    await expect(page.locator("dialog").or(page.locator("[role='dialog']"))).toBeVisible({ timeout: 5000 });
     await page.screenshot({ path: "debugoutput/screenshots/project-creation-dialog.png", fullPage: true });
 
     // Look for the dialog and OK button
@@ -76,13 +88,10 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     await okButton.click();
 
     // Wait for editor to load
-    await page.waitForTimeout(9000);
-    await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(1000);
+    await expectFocusedDashboard(page);
 
     // Select Focused mode to dismiss welcome panel and hide Inspector
-    await selectEditMode(page);
-    await page.waitForTimeout(1000);
+    expect(await selectEditMode(page)).toBe(true);
     await expectFocusedDashboard(page);
 
     // Take screenshot after entering editor
@@ -225,21 +234,19 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     // Start by creating a project using the correct workflow
     const addOnStarterNewButton = page.getByRole("button", { name: "Create New" }).first();
     await addOnStarterNewButton.click();
-    await page.waitForTimeout(1000);
 
     const okButton = await page.getByTestId("submit-button").first();
+    await expect(okButton).toBeVisible({ timeout: 5000 });
     await preferBrowserStorageInProjectDialog(page);
     // The Creator field has no defaultValue (per task 028 — users must actively
     // type their creator name); without filling it, form submit silently rejects
     // with a validation error and we never enter the editor.
     await fillRequiredProjectDialogFields(page);
     await okButton.click();
-    await page.waitForTimeout(9000);
-    await page.waitForLoadState("networkidle");
+    await expectFocusedDashboard(page);
 
     // Select Focused mode to dismiss welcome panel and hide Inspector
-    await selectEditMode(page);
-    await page.waitForTimeout(1000);
+    expect(await selectEditMode(page)).toBe(true);
     await expectFocusedDashboard(page);
 
     // Take screenshot of editor interface
@@ -300,7 +307,9 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     if ((await viewButton.count()) > 0) {
       console.log("Testing View button dropdown");
       await viewButton.click();
-      await page.waitForTimeout(1000);
+      await expect(
+        page.locator("[role='menu']:visible, [role='listbox']:visible, .MuiPopover-root:visible").first()
+      ).toBeVisible({ timeout: 3000 });
       await page.screenshot({ path: "debugoutput/screenshots/view-dropdown.png", fullPage: true });
       // Close dropdown by clicking elsewhere or pressing escape
       await page.keyboard.press("Escape");
@@ -309,7 +318,9 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     if ((await exportToolbarButton.count()) > 0) {
       console.log("Testing Export button dropdown");
       await exportToolbarButton.click();
-      await page.waitForTimeout(1000);
+      await expect(
+        page.locator("[role='menu']:visible, [role='listbox']:visible, .MuiPopover-root:visible").first()
+      ).toBeVisible({ timeout: 3000 });
       await page.screenshot({ path: "debugoutput/screenshots/share-dropdown.png", fullPage: true });
       await page.keyboard.press("Escape");
     }
@@ -317,7 +328,9 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     if ((await testButton.count()) > 0) {
       console.log("Testing Test button dropdown");
       await testButton.click();
-      await page.waitForTimeout(1000);
+      await expect(
+        page.locator("[role='menu']:visible, [role='listbox']:visible, .MuiPopover-root:visible").first()
+      ).toBeVisible({ timeout: 3000 });
       await page.screenshot({ path: "debugoutput/screenshots/run-dropdown.png", fullPage: true });
       await page.keyboard.press("Escape");
     }
@@ -336,21 +349,18 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
       if ((await actionsItem.count()) > 0) {
         console.log("Clicking on Actions item");
         await actionsItem.click();
-        await page.waitForTimeout(1000);
         await page.screenshot({ path: "debugoutput/screenshots/actions-selected.png", fullPage: true });
       }
 
       if ((await projectItem.count()) > 0) {
         console.log("Clicking on Project item");
         await projectItem.click();
-        await page.waitForTimeout(1000);
         await page.screenshot({ path: "debugoutput/screenshots/project-selected.png", fullPage: true });
       }
 
       if ((await inspectorItem.count()) > 0) {
         console.log("Clicking on Inspector item");
         await inspectorItem.click();
-        await page.waitForTimeout(1000);
         await page.screenshot({ path: "debugoutput/screenshots/inspector-selected.png", fullPage: true });
       }
     }
@@ -360,7 +370,7 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     if ((await addButton.count()) > 0) {
       console.log("Testing Add button");
       await addButton.click();
-      await page.waitForTimeout(1000);
+      await expect(page.getByRole("dialog", { name: /Add New Content/i })).toBeVisible({ timeout: 3000 });
       await page.screenshot({ path: "debugoutput/screenshots/add-button-clicked.png", fullPage: true });
       await page.keyboard.press("Escape");
     }
@@ -370,7 +380,9 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     if ((await showButton.count()) > 0) {
       console.log("Testing Show button");
       await showButton.click();
-      await page.waitForTimeout(1000);
+      await expect(
+        page.locator("[role='menu']:visible, [role='listbox']:visible, .MuiPopover-root:visible").first()
+      ).toBeVisible({ timeout: 3000 });
       await page.screenshot({ path: "debugoutput/screenshots/show-button-clicked.png", fullPage: true });
       await page.keyboard.press("Escape");
     }
@@ -387,7 +399,7 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     // Create project and get into editor using correct workflow
     const addOnStarterNewButton = page.getByRole("button", { name: "Create New" }).first();
     await addOnStarterNewButton.click();
-    await page.waitForTimeout(1000);
+    await expect(page.getByTestId("submit-button").first()).toBeVisible({ timeout: 5000 });
 
     await page.getByLabel("Title").fill("automated_test_proj");
     await page.getByLabel("Creator Name").fill("automated_test_creator");
@@ -404,13 +416,12 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
 
     const okButton = await page.getByTestId("submit-button").first();
     await preferBrowserStorageInProjectDialog(page);
+    await fillRequiredProjectDialogFields(page);
     await okButton.click();
-    await page.waitForTimeout(9000);
-    await page.waitForLoadState("networkidle");
+    await expectFocusedDashboard(page);
 
     // Select Focused mode to dismiss welcome panel and hide Inspector
-    await selectEditMode(page);
-    await page.waitForTimeout(1000);
+    expect(await selectEditMode(page)).toBe(true);
     await expectFocusedDashboard(page);
 
     await page.screenshot({ path: "debugoutput/screenshots/editor-export-options.png", fullPage: true });
@@ -479,9 +490,10 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     const exportToolbarButton = getExportToolbarButton(page);
     if ((await exportToolbarButton.count()) > 0) {
       console.log("Testing export toolbar button for additional export options");
-      await page.waitForTimeout(1000);
       await exportToolbarButton.click();
-      await page.waitForTimeout(1000);
+      await expect(
+        page.locator("[role='menu']:visible, [role='listbox']:visible, .MuiPopover-root:visible").first()
+      ).toBeVisible({ timeout: 3000 });
 
       // Look for any dropdown export options
       const shareDropdownOptions = page.locator("[role='menu'], [role='menuitem'], .menu-item");
@@ -509,19 +521,19 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     await expect(addOnStarterNewButton).toBeVisible();
     await addOnStarterNewButton.click();
 
-    await page.waitForTimeout(1000);
+    await expect(page.getByTestId("submit-button").first()).toBeVisible({ timeout: 5000 });
     await page.screenshot({ path: "debugoutput/screenshots/workflow-step1-project-dialog.png", fullPage: true });
 
     const okButton = await page.getByTestId("submit-button").first();
     await preferBrowserStorageInProjectDialog(page);
+    await fillRequiredProjectDialogFields(page);
     await okButton.click();
 
-    await page.waitForTimeout(9000);
-    await page.waitForLoadState("networkidle");
+    await expectFocusedDashboard(page);
 
     // Select Focused mode to dismiss welcome panel and hide Inspector
-    await selectEditMode(page);
-    await page.waitForTimeout(1000);
+    expect(await selectEditMode(page)).toBe(true);
+    await expectFocusedDashboard(page);
 
     // Take screenshot of editor state
     await page.screenshot({ path: "debugoutput/screenshots/workflow-step1-project-created.png", fullPage: true });
@@ -577,21 +589,18 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     if ((await projectItem.count()) > 0) {
       console.log("Selecting Project item");
       await projectItem.click();
-      await page.waitForTimeout(1000);
     }
 
     const inspectorItem = page.locator("option:has-text('Inspector')");
     if ((await inspectorItem.count()) > 0) {
       console.log("Selecting Inspector item");
       await inspectorItem.click();
-      await page.waitForTimeout(1000);
     }
 
     const mainItem = page.locator("option:has-text('main')");
     if ((await mainItem.count()) > 0) {
       console.log("Selecting main TypeScript file");
       await mainItem.click();
-      await page.waitForTimeout(1000);
     }
 
     await page.screenshot({ path: "debugoutput/screenshots/workflow-step2-editor-interaction.png", fullPage: true });
@@ -603,7 +612,6 @@ test.describe("MCTools Web Editor - Comprehensive Editor Workflow @focused", () 
     const actionsItem = page.locator("option:has-text('Actions')");
     if ((await actionsItem.count()) > 0) {
       await actionsItem.click();
-      await page.waitForTimeout(1000);
     }
 
     // Look for actual export buttons

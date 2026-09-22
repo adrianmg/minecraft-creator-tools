@@ -2993,6 +2993,10 @@
 
   "project_editor.image_mgr.edit_image": "Edit image",
   "_project_editor.image_mgr.edit_image.comment": "Tooltip and aria-label for the button that switches from image preview to the image editor",
+  "project_editor.image_mgr.preview": "Preview",
+  "_project_editor.image_mgr.preview.comment": "Label of the image editor toolbar button that leaves editing and returns to the image preview",
+  "project_editor.image_mgr.preview_image": "Preview image",
+  "_project_editor.image_mgr.preview_image.comment": "Tooltip and aria-label for the image editor toolbar button that leaves editing and returns to the image preview",
   "project_editor.image_mgr.no_content": "Image does not have content.",
   "_project_editor.image_mgr.no_content.comment": "Placeholder message shown when an image file has no content to display",
 

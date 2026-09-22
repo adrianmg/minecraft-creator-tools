@@ -196,6 +196,20 @@ export interface CartoServerStatusResponse {
   worldId?: string;
 }
 
+/**
+ * Build the debug portion of a slot's status config — the debugger lifecycle
+ * snapshot (stage, failure kind, sanitized message, dynamic debug port) plus
+ * the session/ownership/schema snapshot. The diagnostics panel is only
+ * mounted while its tab is open, so notifications emitted before its
+ * WebSocket subscription existed are lost; this snapshot lets a late-mounting
+ * web panel hydrate the same facts Electron mode gets via IPC. Delegates to
+ * DedicatedServer.getDebugSlotConfig so both modes serve the identical
+ * payload.
+ */
+export function buildDebugSlotConfig(ds: DedicatedServer): ISlotConfig {
+  return ds.getDebugSlotConfig();
+}
+
 export default class HttpServer {
   host = "localhost";
   public port = 80;
@@ -2544,6 +2558,41 @@ export default class HttpServer {
           }
 
           const debugAction = urlSegments[4]?.split("?")[0];
+
+          if (debugAction === "reattach") {
+            // POST /api/{slot}/debug/reattach - retry acquiring the
+            // single-client debug endpoint (the panel's "Check again" action).
+            // Handled before the debugClient guard: after a failed attach
+            // there is no client, which is exactly when reattach is needed.
+            Log.message(HttpUtilities.getShortReqDescription(req) + " Reattaching debugger on slot " + portOrSlot);
+
+            server
+              .reattachDebugClient()
+              .then((result) => {
+                if (!result.connected) {
+                  // Success is broadcast via the normal debugConnected
+                  // notification; broadcast failures too so every panel
+                  // reflects the re-checked ownership state.
+                  this.notify({
+                    eventName: "debugDisconnected",
+                    timestamp: Date.now(),
+                    slot: portOrSlot,
+                    reason: "Reattach attempt did not connect",
+                    ownership: result.ownership,
+                  });
+                }
+                res.writeHead(200, corsHeaders);
+                res.end(JSON.stringify({ success: result.connected, ownership: result.ownership }));
+              })
+              .catch((e) => {
+                Log.error("Error handling debug reattach request: " + e.toString());
+                if (!res.headersSent) {
+                  this.sendErrorRequest(500, "Internal server error", req, res);
+                }
+              });
+            return;
+          }
+
           const debugClient = server.debugClient;
 
           if (!debugClient) {
@@ -2625,21 +2674,11 @@ export default class HttpServer {
         worldId: ds.managedWorldId,
       };
 
-      // Include slot config in initial connection responses
+      // Include slot config in initial connection responses. Built by
+      // DedicatedServer so the Electron debug-status IPC serves the identical
+      // hydration payload.
       if (includeConfig) {
-        // Get debug session info from the debug client
-        const debugClient = ds.debugClient;
-        const debugSessionInfo = debugClient?.sessionInfo;
-
-        result.slotConfig = {
-          debuggerEnabled: ds.debuggerEnabled,
-          debuggerStreamingEnabled: ds.debuggerStreamingEnabled,
-          // DebugConnectionState is a string enum, so we can use it directly
-          debugConnectionState: debugSessionInfo?.state ?? "disconnected",
-          debugProtocolVersion: debugSessionInfo?.protocolVersion,
-          debugLastStatTick: debugSessionInfo?.lastStatTick,
-          debugErrorMessage: debugSessionInfo?.errorMessage,
-        };
+        result.slotConfig = ds.getDebugSlotConfig();
       }
 
       return result;
@@ -3361,9 +3400,7 @@ export default class HttpServer {
    * downstream callers can react to the specific failure.
    */
   sendZipImportError(error: ZipImportError, req: http.IncomingMessage, res: http.ServerResponse) {
-    Log.message(
-      HttpUtilities.getShortReqDescription(req) + "Zip import error (" + error.code + "): " + error.message
-    );
+    Log.message(HttpUtilities.getShortReqDescription(req) + "Zip import error (" + error.code + "): " + error.message);
 
     if (!res.headersSent) {
       const corsHeaders = this.getCorsHeaders(req);

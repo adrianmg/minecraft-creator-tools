@@ -71,11 +71,13 @@ function writeSingletonJsonMerging(folder: IFolder, fileName: string, newContent
     if (existing && typeof existing === "object") {
       const merged = StorageUtilities.deepMergeJsonObjects(existing, newContent);
       file.setContent(JSON.stringify(merged, null, 2));
+      StorageUtilities.invalidateParsedContent(file);
       return;
     }
   }
 
   file.setContent(JSON.stringify(newContent, null, 2));
+  StorageUtilities.invalidateParsedContent(file);
 }
 
 export class ContentWriter {

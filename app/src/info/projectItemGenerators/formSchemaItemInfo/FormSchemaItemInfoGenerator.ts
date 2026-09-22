@@ -17,7 +17,8 @@ import StorageUtilities from "../../../storage/StorageUtilities";
 import ProjectItemUtilities from "../../../app/ProjectItemUtilities";
 import { ProjectItemType } from "../../../app/IProjectItemData";
 import IFormDefinition from "../../../dataform/IFormDefinition";
-import { FormSchemaItemInfoGeneratorTest } from "./FormSchemaItemInfoData";
+import { FormSchemaItemInfoGeneratorTest, FormSchemaValidationRules } from "./FormSchemaItemInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { FormSchemaItemInfoGeneratorTest };
 
@@ -26,10 +27,12 @@ export { FormSchemaItemInfoGeneratorTest };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/jsonf.form.json} for topic definitions
  */
-export default class FormSchemaItemInfoGenerator implements IProjectInfoItemGenerator {
+export default class FormSchemaItemInfoGenerator implements IProjectInfoItemGenerator, IValidationRuleProvider {
   id = "JSONF";
   title = "JSON Structure";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = FormSchemaValidationRules;
 
   _schemaContentByPath: { [id: string]: object } = {};
 

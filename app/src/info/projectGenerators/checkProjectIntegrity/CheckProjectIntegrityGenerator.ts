@@ -2,7 +2,12 @@ import Project from "../../../app/Project";
 import IProjectInfoGenerator from "../../IProjectInfoGenerator";
 import ProjectInfoItem from "../../ProjectInfoItem";
 import { resultFromTest } from "../../tests/TestDefinition";
-import { CheckIntegrityTest, CheckIntegrityTests } from "./CheckProjectIntegrityData";
+import {
+  CheckIntegrityTest,
+  CheckIntegrityTests,
+  CheckProjectIntegrityValidationRules,
+} from "./CheckProjectIntegrityData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 const MaxOrphanFileResults = 5;
 
@@ -11,10 +16,12 @@ const MaxOrphanFileResults = 5;
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/prjint.form.json} for topic definitions
  */
-export default class CheckProjectIntegrityGenerator implements IProjectInfoGenerator {
+export default class CheckProjectIntegrityGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id: string = "PRJINT";
   title: string = "Project Integrity";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = CheckProjectIntegrityValidationRules;
 
   generate(project: Project): Promise<ProjectInfoItem[]> {
     const orphanResults = this.checkOrphanedFiles(project);

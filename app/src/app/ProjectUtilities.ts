@@ -11,6 +11,7 @@ import Utilities from "../core/Utilities";
 import { ProjectEditPreference, ProjectFocus, ProjectScriptLanguage } from "./IProjectData";
 import BehaviorManifestDefinition from "../minecraft/BehaviorManifestDefinition";
 import NpmPackageDefinition from "../devproject/NpmPackageDefinition";
+import VsCodeLaunchDefinition from "../devproject/VsCodeLaunchDefinition";
 import ResourceManifestDefinition from "../minecraft/ResourceManifestDefinition";
 import ISnippet from "./ISnippet";
 import IGalleryItem from "./IGalleryItem";
@@ -1521,6 +1522,13 @@ export default class ProjectUtilities {
     oldUids["defaultDataPack"] = project.defaultDataUniqueId;
     oldUids["defaultScriptModulePack"] = project.defaultScriptModuleUniqueId;
 
+    // The managed launch profile's targetModuleUuid is filled from the
+    // default pack MANIFEST's script module (getExpectedScriptModuleUuid),
+    // which may differ from project.defaultScriptModuleUniqueId. Capture
+    // that fill source before any uuid changes so the profile can follow
+    // the module it actually targeted.
+    const previousScriptModuleUuid = await ProjectUtilities.getDefaultPackScriptModuleUuid(project);
+
     await project.setDefaultResourcePackUniqueIdAndUpdateDependencies(Utilities.createUuid());
     await project.setDefaultBehaviorPackUniqueIdAndUpdateDependencies(Utilities.createUuid());
     project.defaultDataUniqueId = Utilities.createUuid();
@@ -1585,7 +1593,49 @@ export default class ProjectUtilities {
       }
     }
 
+    // A managed launch profile whose targetModuleUuid was filled from the
+    // previous default script module now points at a uuid that no longer
+    // exists in any manifest; retarget it to the renamed module. Authored
+    // targets pointing elsewhere are preserved (see
+    // VsCodeLaunchDefinition.applyScriptModuleUuidChange).
+    const newScriptModuleUuid = await ProjectUtilities.getDefaultPackScriptModuleUuid(project);
+
+    for (const pi of itemsCopy) {
+      if (pi.itemType === ProjectItemType.vsCodeLaunchJson && pi.storageType === ProjectItemStorageType.singleFile) {
+        if (!pi.isContentLoaded) {
+          await pi.loadContent();
+        }
+
+        if (pi.primaryFile) {
+          const launch = await VsCodeLaunchDefinition.ensureOnFile(pi.primaryFile);
+
+          if (launch) {
+            launch.project = project;
+
+            if (await launch.applyScriptModuleUuidChange(previousScriptModuleUuid, newScriptModuleUuid)) {
+              await launch.save();
+            }
+          }
+        }
+      }
+    }
+
     await project.save();
+  }
+
+  /**
+   * The script-module UUID currently declared by the default behavior
+   * pack's manifest - the value launch-profile module targeting is filled
+   * from - or undefined when no pack, manifest, or script module exists.
+   */
+  private static async getDefaultPackScriptModuleUuid(project: Project): Promise<string | undefined> {
+    const pack = await project.getDefaultBehaviorPack();
+
+    if (pack && pack.manifest instanceof BehaviorManifestDefinition) {
+      return pack.manifest.getScriptModule()?.uuid;
+    }
+
+    return undefined;
   }
 
   static sanitizeProjectName(name: string) {

@@ -487,7 +487,7 @@ class EntityTypeOverviewPanel extends Component<IEntityTypeOverviewPanelProps, I
                     style={{
                       fontSize: "13px",
                       fontWeight: 700,
-                      color: isDark ? mcColors.green3 : mcColors.green5,
+                      color: isDark ? mcColors.green3 : mcColors.green6,
                       marginBottom: "6px",
                     }}
                   >

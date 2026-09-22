@@ -10,7 +10,12 @@ import ProjectItemUtilities from "../../../app/ProjectItemUtilities";
 import { InfoItemType } from "../../IInfoItemData";
 import Database from "../../../minecraft/Database";
 import { ProjectItemType } from "../../../app/IProjectItemData";
-import { UnlinkedItemInfoGeneratorTest, UnlinkedItemNotFoundByType } from "./UnlinkedItemInfoData";
+import {
+  UnlinkedItemInfoGeneratorTest,
+  UnlinkedItemNotFoundByType,
+  UnlinkedItemValidationRules,
+} from "./UnlinkedItemInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { UnlinkedItemInfoGeneratorTest, UnlinkedItemNotFoundByType };
 
@@ -19,10 +24,12 @@ export { UnlinkedItemInfoGeneratorTest, UnlinkedItemNotFoundByType };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/unlink.form.json} for topic definitions
  */
-export default class UnlinkedItemInfoGenerator implements IProjectInfoItemGenerator {
+export default class UnlinkedItemInfoGenerator implements IProjectInfoItemGenerator, IValidationRuleProvider {
   id = "UNLINK";
   title = "Unlinked Items";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = UnlinkedItemValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {}
 

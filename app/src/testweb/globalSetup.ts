@@ -21,7 +21,10 @@ async function globalSetup(): Promise<void> {
 
   try {
     const page = await browser.newPage();
-    await page.goto(BASE_URL, { timeout: WARMUP_TIMEOUT_MS, waitUntil: "networkidle" });
+    const deadline = Date.now() + WARMUP_TIMEOUT_MS;
+    const remainingTimeout = () => Math.max(0, deadline - Date.now());
+    await page.goto(BASE_URL, { timeout: remainingTimeout(), waitUntil: "load" });
+    await page.locator("#root > *").first().waitFor({ state: "attached", timeout: remainingTimeout() });
     const elapsed = Date.now() - start;
     console.log(`Global setup: Vite warmup complete (${elapsed}ms)`);
     await page.close();

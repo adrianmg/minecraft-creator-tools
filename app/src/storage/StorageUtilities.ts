@@ -197,7 +197,7 @@ export default class StorageUtilities {
   public static commentJsonLogFrequency = 0;
 
   public static isUsableFile(path: string) {
-    const extension = StorageUtilities.getTypeFromName(path);
+    const extension = StorageUtilities.getTypeFromName(StorageUtilities.getLeafName(path));
 
     return AllowedExtensionsSet.has(extension);
   }
@@ -736,7 +736,16 @@ export default class StorageUtilities {
     let zipStorage: IStorage | null | undefined = file.fileContainerStorage;
 
     if (!zipStorage) {
-      zipStorage = await ZipStorage.loadFromFile(file);
+      // ZipStorage.loadFromUint8Array throws on unreadable archives (its
+      // upload callers need the typed error); here an unreadable container is
+      // a reportable state, not a fatal one — validators surface it and
+      // inference skips the file.
+      try {
+        zipStorage = await ZipStorage.loadFromFile(file);
+      } catch (e: any) {
+        file.errorStateMessage = e.message ? e.message : e.toString();
+        return file.errorStateMessage;
+      }
 
       if (!zipStorage) {
         return undefined;
@@ -1806,6 +1815,23 @@ export default class StorageUtilities {
     }
 
     return ancestorFolder;
+  }
+
+  /**
+   * Drops any parsed view of a file whose bytes were just replaced directly.
+   *
+   * setContent swaps the content but leaves `manager` alone, because a Definition that saves itself
+   * has to stay attached to its own file. Code that writes around the Definition layer (raw JSON
+   * writes, file copies) has to call this, or the next XyzDefinition.ensureOnFile hands back a parse
+   * of the previous contents, since it only reparses when isLoaded is false.
+   *
+   * Relation building depends on this: block relations ask the terrain texture catalog whether it
+   * knows a texture id, and a stale catalog says no, so the block never links to it and the editor
+   * reports the block has no texture even though the file on disk is correct.
+   */
+  public static invalidateParsedContent(file: IFile) {
+    file.manager = undefined;
+    file.commentJsonCache = undefined;
   }
 
   public static getJsonObject(file: IFile): any | undefined {

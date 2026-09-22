@@ -17,7 +17,12 @@ import ProjectUtilities, { ProjectMetaCategory } from "../../../app/ProjectUtili
 import ProjectItemVariant from "../../../app/ProjectItemVariant";
 import Utilities from "../../../core/Utilities";
 import { PackType } from "../../../minecraft/Pack";
-import { TextureImageInfoGeneratorTest, TexturePerformanceTierCount } from "./TextureImageInfoData";
+import {
+  TextureImageInfoGeneratorTest,
+  TexturePerformanceTierCount,
+  TextureImageValidationRules,
+} from "./TextureImageInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { TextureImageInfoGeneratorTest, TexturePerformanceTierCount };
 
@@ -194,9 +199,11 @@ const TextureMemoryLimitsByTier: { [category: number]: { [tier: number]: number 
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/textureimage.form.json} for topic definitions
  */
-export default class TextureImageInfoGenerator implements IProjectInfoGenerator {
+export default class TextureImageInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "TEXTUREIMAGE";
   title = "Texture Image Validation";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = TextureImageValidationRules;
 
   performAddOnValidations = false;
 

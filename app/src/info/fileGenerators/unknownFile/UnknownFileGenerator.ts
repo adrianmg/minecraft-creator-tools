@@ -9,7 +9,8 @@ import StorageUtilities from "../../../storage/StorageUtilities";
 import ProjectInfoSet from "../../ProjectInfoSet";
 import Project from "../../../app/Project";
 import ContentIndex from "../../../core/ContentIndex";
-import { UnknownFileGeneratorTest } from "./UnknownFileData";
+import { UnknownFileGeneratorTest, UnknownFileValidationRules } from "./UnknownFileData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { UnknownFileGeneratorTest };
 
@@ -18,10 +19,12 @@ export { UnknownFileGeneratorTest };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/unkfile.form.json} for topic definitions
  */
-export default class UnknownFileGenerator implements IProjectFileInfoGenerator {
+export default class UnknownFileGenerator implements IProjectFileInfoGenerator, IValidationRuleProvider {
   id = "UNKFILE";
   title = "Unknown files";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = UnknownFileValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {}
 

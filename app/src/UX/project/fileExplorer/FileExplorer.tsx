@@ -187,7 +187,9 @@ export default class FileExplorer extends Component<IFileExplorerProps, IFileExp
       // failed save doesn't block opening the file in Raw mode, but we log so
       // the failure isn't completely invisible.
       Promise.resolve(tools.save()).catch((err) => {
-        Log.debug("FileExplorer: persisting Raw edit preference failed: " + (err instanceof Error ? err.message : String(err)));
+        Log.debug(
+          "FileExplorer: persisting Raw edit preference failed: " + (err instanceof Error ? err.message : String(err))
+        );
       });
     }
     this._handleNewFileSelected(file);
@@ -396,10 +398,7 @@ export default class FileExplorer extends Component<IFileExplorerProps, IFileExp
           const c = ProjectItemTypeGroupColors[entry.group];
           const color = c ? `rgb(${c.red}, ${c.green}, ${c.blue})` : "inherit";
           return (
-            <div
-              key={entry.group}
-              style={{ display: "flex", alignItems: "center", gap: 6, lineHeight: "18px" }}
-            >
+            <div key={entry.group} style={{ display: "flex", alignItems: "center", gap: 6, lineHeight: "18px" }}>
               <span
                 style={{
                   display: "inline-block",

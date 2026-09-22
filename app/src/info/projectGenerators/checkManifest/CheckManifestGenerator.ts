@@ -6,7 +6,7 @@ import ContentIndex from "../../../core/ContentIndex";
 import { findMissingProperty, notEmpty } from "../../../core/ObjectUtilities";
 import Utilities from "../../../core/Utilities";
 import SemanticVersion from "../../../core/versioning/SemanticVersion";
-import Pack, { PackType } from "../../../minecraft/Pack";
+import { PackType } from "../../../minecraft/Pack";
 import IProjectInfoGenerator from "../../IProjectInfoGenerator";
 import ProjectInfoItem from "../../ProjectInfoItem";
 import { resultFromTest } from "../../tests/TestDefinition";
@@ -14,11 +14,14 @@ import Manifest, { parseManifest } from "../../../minecraft/manifests/Manifest";
 import { Tests } from "./CheckManifestData";
 import * as ValidationData from "./CheckManifestData";
 import { ProjectItemType } from "../../../app/IProjectItemData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 type PackDesc = {
   type?: PackType;
   isWorld?: boolean;
   isEDUOffer?: boolean;
+  /** Whether the owning pack carries Vibrant Visuals/PBR content (see Pack.hasVibrantVisualsContent). */
+  hasVibrantVisualsContent?: () => boolean;
 };
 
 /**
@@ -26,10 +29,14 @@ type PackDesc = {
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/chkmanif.form.json} for topic definitions
  */
-export default class CheckManifestGenerator implements IProjectInfoGenerator {
+export default class CheckManifestGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id: string = "CHKMANIF";
   title: string = "Manifest Validation";
   canAlwaysProcess = true;
+
+  // The very same definitions used to construct results via resultFromTest,
+  // so the catalog inventory cannot drift from production behavior.
+  readonly validationRules: readonly ValidationRuleDefinition[] = Object.values(Tests);
 
   async generate(project: Project, contentIndex: ContentIndex): Promise<ProjectInfoItem[]> {
     const packs = project.packs;
@@ -45,7 +52,23 @@ export default class CheckManifestGenerator implements IProjectInfoGenerator {
       return invalidManifests;
     }
 
-    const packManifests = packs.map((pack) => [pack.getManifest(), pack] as const);
+    // Packs carry their type as `packType`; project them onto the PackDesc
+    // shape the per-manifest validators read (`type`) so pack-type-gated
+    // checks (e.g. the resource-pack min_engine_version rules) actually see
+    // the pack type. `isWorld` stays unset here: it means "this is a world
+    // template manifest" (the worldManifests mapping below), not "this pack
+    // ships inside a world" — a behavior pack bundled in a world template
+    // must not be held to world-template header requirements.
+    const packManifests = packs.map(
+      (pack) =>
+        [
+          pack.getManifest(),
+          {
+            type: pack.packType,
+            hasVibrantVisualsContent: () => pack.hasVibrantVisualsContent(),
+          } as PackDesc,
+        ] as const
+    );
     const worldManifests = project.items
       .filter((item) => item.itemType === ProjectItemType.worldTemplateManifestJson)
       .map<[ProjectItem, PackDesc]>((manifest) => [manifest, { isWorld: true }]);
@@ -112,7 +135,7 @@ export default class CheckManifestGenerator implements IProjectInfoGenerator {
       .map((data) => resultFromTest(Tests.DuplicateSettingsName, data));
 
     const noNamespaces = settings
-      .filter((setting) => setting.name && ValidationData.NamespaceFormat.test(setting.name))
+      .filter((setting) => setting.name && !ValidationData.NamespaceFormat.test(setting.name))
       .map((setting) => ({ id: this.id, item: manifestItem, data: setting.name }))
       .map((data) => resultFromTest(Tests.SettingsNamespaceRequired, data));
 
@@ -183,15 +206,18 @@ export default class CheckManifestGenerator implements IProjectInfoGenerator {
       .map((duplicate) => ({ id: this.id, item: manifestItem, data: duplicate }))
       .map((data) => resultFromTest(Tests.DuplicateOptions, data));
 
+    // A missing default is reported by the missing-property result; a present
+    // default must be one of the options' names (a non-string default can
+    // never match one).
     const badDefaults = dropdowns
       .filter(
         (dropdown) =>
           dropdown.options &&
-          typeof dropdown.default === "string" &&
-          dropdown.options.map((opt) => opt.name).includes(dropdown.default)
+          dropdown.default !== undefined &&
+          !(typeof dropdown.default === "string" && dropdown.options.map((opt) => opt.name).includes(dropdown.default))
       )
       .map((dropdown) => ({ id: this.id, item: manifestItem, data: dropdown.default }))
-      .map((data) => resultFromTest(Tests.InvalidSliderDefault, data));
+      .map((data) => resultFromTest(Tests.InvalidDropdownDefault, data));
 
     return [
       ...noNamespaces,
@@ -220,13 +246,11 @@ export default class CheckManifestGenerator implements IProjectInfoGenerator {
 
     // Scope VV/PBR detection to THIS pack only, never the whole submission. A project may contain
     // several resource packs where only some have PBR content, and one pack's VV content must not
-    // make a sibling pack fail this check. The owning Pack is the `pack` argument here — generate()
-    // maps each pack to [pack.getManifest(), pack] — so read VV content directly from it. We
-    // deliberately do NOT re-derive the pack by path-prefix matching: a prefix match can resolve the
-    // wrong pack when one pack's path is a prefix of another's (e.g. "/rp" vs "/rp_vibrant").
-    const owningPack = pack as Partial<Pack>;
-    const hasVVFilesInPack =
-      typeof owningPack.hasVibrantVisualsContent === "function" ? owningPack.hasVibrantVisualsContent() : false;
+    // make a sibling pack fail this check. The owning pack's VV state is projected onto the
+    // PackDesc by generate() — so read VV content directly from it. We deliberately do NOT
+    // re-derive the pack by path-prefix matching: a prefix match can resolve the wrong pack when
+    // one pack's path is a prefix of another's (e.g. "/rp" vs "/rp_vibrant").
+    const hasVVFilesInPack = pack.hasVibrantVisualsContent ? pack.hasVibrantVisualsContent() : false;
 
     const capabilities = manifest.capabilities;
     let hasPbr = false;
@@ -412,8 +436,8 @@ export default class CheckManifestGenerator implements IProjectInfoGenerator {
       }
     }
 
-    if (header.packscope && ValidationData.AllowedPackScopes.has(header.packscope)) {
-      results.push(resultFromTest(Tests.InvalidPackScope, { id: this.id, item: manifestItem, data: header.packscope }));
+    if (header.packScope && !ValidationData.AllowedPackScopes.has(header.packScope)) {
+      results.push(resultFromTest(Tests.InvalidPackScope, { id: this.id, item: manifestItem, data: header.packScope }));
     }
 
     return results;

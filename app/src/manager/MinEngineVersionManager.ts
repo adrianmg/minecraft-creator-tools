@@ -21,6 +21,8 @@ import PersonaManifestDefinition from "../minecraft/PersonaManifestDefinition";
 import ProjectItemUtilities from "../app/ProjectItemUtilities";
 import SemanticVersion from "../core/versioning/SemanticVersion";
 import { isMinorVersionTooOld } from "../core/versioning/MinecraftVersionRules";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../info/tests/ValidationRuleDefinition";
+import { MinEngineVersionValidationRules } from "./MinEngineVersionManagerData";
 
 /**
  * Validates and updates min_engine_version settings in pack manifests.
@@ -48,9 +50,11 @@ export enum MinEngineVersionManagerTest {
   parseLatestMinecraftVersion = 501,
 }
 
-export default class MinEngineVersionManager implements IProjectInfoGenerator, IProjectUpdater {
+export default class MinEngineVersionManager implements IProjectInfoGenerator, IProjectUpdater, IValidationRuleProvider {
   id = "MINENGINEVER";
   title = "Min Engine Version";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = MinEngineVersionValidationRules;
 
   performPlatformVersionValidations: boolean = false;
 

@@ -12,6 +12,8 @@ import { UpdateResultType } from "../updates/IUpdateResult";
 import ProjectInfoSet from "../info/ProjectInfoSet";
 import ContentIndex from "../core/ContentIndex";
 import BlocksCatalogDefinition from "../minecraft/BlocksCatalogDefinition";
+import { ValidationRuleDefinition } from "../info/tests/ValidationRuleDefinition";
+import { BlocksCatalogValidationRules } from "./BlocksCatalogManagerData";
 
 export enum BlocksCatalogUpdate {
   removeUnusedBlockResourceIdentifiers = 1051,
@@ -32,6 +34,8 @@ export enum BlocksCatalogInfo {
 export default class BlocksCatalogManager implements IProjectInfoGenerator, IProjectUpdater {
   id = "BLOCKSCAT";
   title = "Blocks Catalog";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = BlocksCatalogValidationRules;
 
   getUpdaterData(updaterId: number) {
     return {

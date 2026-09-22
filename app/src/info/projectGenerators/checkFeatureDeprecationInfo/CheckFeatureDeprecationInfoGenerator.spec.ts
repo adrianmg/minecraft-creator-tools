@@ -102,11 +102,11 @@ describe("CheckFeatureDeprecationInfoGenerator", () => {
     });
   });
 
-  describe("deprecated texture files in blocks/ folder", () => {
-    it("should report deprecatedTexture for a deprecated texture filename in the blocks folder", async () => {
+  describe("deprecated texture files at the canonical textures/blocks location", () => {
+    it("should report deprecatedTexture for a deprecated texture at the pack's textures/blocks location", async () => {
       const item = createStubProjectItem({
         name: "smithing_table_top.png",
-        getFolder: () => ({ name: "blocks" }),
+        getPackRelativePath: async () => "/textures/blocks/smithing_table_top.png",
       });
       const results = await generator.generate(createStubProject([item]));
       const warnings = results.filter(
@@ -115,19 +115,40 @@ describe("CheckFeatureDeprecationInfoGenerator", () => {
       expect(warnings.length).to.equal(1);
     });
 
-    it("should return no results for a non-deprecated texture in the blocks folder", async () => {
+    it("should report deprecatedTexture for a deprecated texture at a subpack's textures/blocks location", async () => {
+      const item = createStubProjectItem({
+        name: "smithing_table_top.png",
+        getPackRelativePath: async () => "/subpacks/high_res/textures/blocks/smithing_table_top.png",
+      });
+      const results = await generator.generate(createStubProject([item]));
+      const warnings = results.filter(
+        (r) => r.generatorIndex === CheckFeatureDeprecationInfoGeneratorTest.deprecatedTexture
+      );
+      expect(warnings.length).to.equal(1);
+    });
+
+    it("should return no results for a non-deprecated texture at the textures/blocks location", async () => {
       const item = createStubProjectItem({
         name: "grass_carried.png",
-        getFolder: () => ({ name: "blocks" }),
+        getPackRelativePath: async () => "/textures/blocks/grass_carried.png",
       });
       const results = await generator.generate(createStubProject([item]));
       expect(results.length).to.equal(0);
     });
 
-    it("should not flag a deprecated texture filename outside the blocks folder", async () => {
+    it("should not flag a deprecated texture filename whose parent folder is merely named blocks", async () => {
       const item = createStubProjectItem({
         name: "smithing_table_top.png",
-        getFolder: () => ({ name: "textures" }),
+        getPackRelativePath: async () => "/textures/harness/blocks/smithing_table_top.png",
+      });
+      const results = await generator.generate(createStubProject([item]));
+      expect(results.length).to.equal(0);
+    });
+
+    it("should not flag a deprecated texture filename outside textures/blocks", async () => {
+      const item = createStubProjectItem({
+        name: "smithing_table_top.png",
+        getPackRelativePath: async () => "/textures/smithing_table_top.png",
       });
       const results = await generator.generate(createStubProject([item]));
       expect(results.length).to.equal(0);

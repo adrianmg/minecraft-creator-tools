@@ -3,6 +3,9 @@
 
 import { assert } from "chai";
 import JsonSchemaItemInfoGenerator from "./JsonSchemaItemInfoGenerator";
+import { OfficialSchemaItemTypes } from "./JsonSchemaItemInfoData";
+import ProjectItemUtilities from "../../../app/ProjectItemUtilities";
+import { ProjectItemType } from "../../../app/IProjectItemData";
 import { createStubProjectItem } from "../../../test/stubs/app/projects/StubProjectItem";
 import { createStubFile } from "../../../test/stubs/app/io/StubFile";
 
@@ -44,5 +47,21 @@ describe("JsonSchemaItemInfoGenerator", () => {
     });
     const results = await gen.generate(item, noOpContentIndex);
     assert.deepEqual(results, []);
+  });
+
+  // The rule inventory is a leaf data module that cannot import
+  // ProjectItemUtilities, so it enumerates official-schema item types as a
+  // literal list; this test keeps that list from drifting apart from the
+  // production mapping in either direction.
+  it("inventories exactly the item types with an official schema", () => {
+    const expected = Object.values(ProjectItemType)
+      .filter((value): value is ProjectItemType => typeof value === "number")
+      .filter((itemType) => ProjectItemUtilities.getOfficialSchemaPathForType(itemType) !== undefined)
+      .sort((a, b) => a - b);
+
+    assert.deepEqual(
+      [...OfficialSchemaItemTypes].sort((a, b) => a - b).map((t) => ProjectItemType[t]),
+      expected.map((t) => ProjectItemType[t])
+    );
   });
 });

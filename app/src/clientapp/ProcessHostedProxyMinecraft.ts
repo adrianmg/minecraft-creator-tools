@@ -19,11 +19,15 @@ import {
   IDebugStatsNotificationBody,
   IDebugConnectedNotificationBody,
   IDebugDisconnectedNotificationBody,
+  IDebugSchemaNotificationBody,
   IDebugPausedNotificationBody,
   IDebugResumedNotificationBody,
   IDebugProfilerStateNotificationBody,
+  IDebugStageNotificationBody,
   IProfilerCaptureNotificationBody,
 } from "../local/IServerNotification";
+import { DebugOwnershipState } from "../debugger/IMinecraftDebugProtocol";
+import { ISlotConfig } from "../app/CreatorToolsAuthentication";
 
 export default class ProcessHostedMinecraft implements IMinecraft {
   private _creatorTools: CreatorTools;
@@ -56,6 +60,8 @@ export default class ProcessHostedMinecraft implements IMinecraft {
   private _onDebugResumed = new EventDispatcher<IMinecraft, IDebugResumedNotificationBody>();
   private _onDebugProfilerState = new EventDispatcher<IMinecraft, IDebugProfilerStateNotificationBody>();
   private _onProfilerCapture = new EventDispatcher<IMinecraft, IProfilerCaptureNotificationBody>();
+  private _onDebugStage = new EventDispatcher<IMinecraft, IDebugStageNotificationBody>();
+  private _onDebugSchema = new EventDispatcher<IMinecraft, IDebugSchemaNotificationBody>();
 
   public get onWorldFolderReady() {
     return this._onWorldStorageReady.asEvent();
@@ -92,6 +98,15 @@ export default class ProcessHostedMinecraft implements IMinecraft {
   public get onProfilerCapture() {
     return this._onProfilerCapture.asEvent();
   }
+
+  public get onDebugStage() {
+    return this._onDebugStage.asEvent();
+  }
+
+  public get onDebugSchema() {
+    return this._onDebugSchema.asEvent();
+  }
+
 
   public get onMessage() {
     return this._onMessage.asEvent();
@@ -223,6 +238,15 @@ export default class ProcessHostedMinecraft implements IMinecraft {
         }
         break;
 
+      case "dedicatedServerDebugSchema":
+        try {
+          const schemaBody = JSON.parse(data) as IDebugSchemaNotificationBody;
+          this._onDebugSchema.dispatch(this, schemaBody);
+        } catch (e) {
+          Log.debug("Failed to parse debugSchema IPC: " + e);
+        }
+        break;
+
       case "dedicatedServerDebugPaused":
         try {
           const pauseBody = JSON.parse(data) as IDebugPausedNotificationBody;
@@ -258,11 +282,29 @@ export default class ProcessHostedMinecraft implements IMinecraft {
           Log.debug("Failed to parse profilerCapture IPC: " + e);
         }
         break;
+
+      case "dedicatedServerDebugStage":
+        try {
+          const stageBody = JSON.parse(data) as IDebugStageNotificationBody;
+          this._onDebugStage.dispatch(this, stageBody);
+        } catch (e) {
+          Log.debug("Failed to parse debugStage IPC: " + e);
+        }
+        break;
     }
   }
 
   async initialize() {
-    await this.start();
+    // start() rejects when the shared startup failed (its "<error>"
+    // completion payload); initialize() has no result contract and its
+    // callers (CreatorTools.connectToMinecraft) do not catch, so translate
+    // the rejection into the established signal: the error state (already
+    // set by start()) plus a log, never an unhandled rejection.
+    try {
+      await this.start();
+    } catch (e) {
+      Log.error("Could not start the dedicated server: " + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   get dedicatedServerBehaviorPacksFolder(): IFolder | null {
@@ -337,6 +379,93 @@ export default class ProcessHostedMinecraft implements IMinecraft {
   }
 
   /**
+   * Ask the main process to retry the debugger connection (user-initiated
+   * recovery from a failed lifecycle stage). The completion payload is
+   * "1"/"0" for retried/not-retried and "<error>..." when the retry threw
+   * in the main process (which settles the request instead of leaving it
+   * pending); the error payload becomes a rejection here, matching start().
+   */
+  async debugRetryConnection(): Promise<boolean> {
+    const result = await AppServiceProxy.sendAsync(AppServiceProxyCommands.debugRetryConnection, "");
+
+    if (result !== undefined && result.startsWith("<error>")) {
+      throw new Error(result.substring("<error>".length));
+    }
+
+    return result === "1";
+  }
+
+  /**
+   * Fetch a sanitized debugger diagnostics snapshot (JSON) from the main process.
+   */
+  async getDebugDiagnostics(): Promise<string | undefined> {
+    return await AppServiceProxy.sendAsync(AppServiceProxyCommands.getDebugDiagnostics, "");
+  }
+
+  /**
+   * Fetch the current debug session snapshot (ISlotConfig) from the main
+   * process — the same hydration payload web mode gets from /status,
+   * including the debugger lifecycle fields (stage, failure kind, message,
+   * dynamic debug port). Used by DebugStatsPanel on mount: the panel is only
+   * mounted while its tab is open, so the live debugConnected/debugSchema/
+   * debugStage events may have fired long before it subscribed.
+   */
+  async getDebugStageStatus(): Promise<IDebugStageNotificationBody | undefined> {
+    const result = await AppServiceProxy.sendAsync(AppServiceProxyCommands.getDebugStatus, "");
+
+    if (result && result.length > 0) {
+      try {
+        return JSON.parse(result);
+      } catch (e) {
+        Log.debug("Failed to parse debug status IPC result: " + e);
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Ask the main process to retry acquiring the single-client debug endpoint
+   * (the diagnostics panel's "Check again" action). Returns the resulting
+   * connection/ownership state, or undefined if the result can't be parsed.
+   */
+  async debugReattach(): Promise<{ connected: boolean; ownership: DebugOwnershipState } | undefined> {
+    const result = await AppServiceProxy.sendAsync(AppServiceProxyCommands.debugReattach, "");
+
+    if (result) {
+      try {
+        return JSON.parse(result);
+      } catch (e) {
+        Log.debug("Failed to parse debugReattach IPC result: " + e);
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Fetch the current debug session snapshot (ISlotConfig) from the main
+   * process — the same hydration payload web mode gets from /status,
+   * including the debugger lifecycle fields (stage, failure kind, message,
+   * dynamic debug port). Used by DebugStatsPanel on mount: the panel is only
+   * mounted while its tab is open, so the live debugConnected/debugSchema/
+   * debugStage events may have fired long before it subscribed.
+   */
+  async getDebugSessionStatus(): Promise<ISlotConfig | undefined> {
+    const result = await AppServiceProxy.sendAsync(AppServiceProxyCommands.getDedicatedServerDebugStatus, "");
+
+    if (result && result.length > 0) {
+      try {
+        return JSON.parse(result);
+      } catch (e) {
+        Log.debug("Failed to parse debug status IPC result: " + e);
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
    * When the dedicated server starts, query the main process for the world folder path
    * via IPC so that the world map and debug stats panels appear in MinecraftDisplay
    * immediately, without requiring a deploy operation first.
@@ -377,7 +506,16 @@ export default class ProcessHostedMinecraft implements IMinecraft {
 
     this.notifyStateChanged(CreatorToolsMinecraftState.starting);
 
-    await AppServiceProxy.sendAsync(AppServiceProxyCommands.startDedicatedServer, path);
+    // The completion payload is empty on success and "<error>..." when the
+    // shared startup failed or threw (DedicatedServerCommandHandler settles
+    // EVERY joined request either way). Turn failures into a rejection so
+    // callers settle deterministically instead of hanging in "starting".
+    const result = await AppServiceProxy.sendAsync(AppServiceProxyCommands.startDedicatedServer, path);
+
+    if (result !== undefined && result.startsWith("<error>")) {
+      this.notifyStateChanged(CreatorToolsMinecraftState.error);
+      throw new Error(result.substring("<error>".length));
+    }
   }
 
   async prepareDedicatedServer(project: Project) {
@@ -388,9 +526,19 @@ export default class ProcessHostedMinecraft implements IMinecraft {
   async restartDedicatedServer(project: Project) {
     await this.stop();
 
-    await this.prepareDedicatedServer(project);
+    // Same translation as initialize(): a failed start surfaces through the
+    // error state and a log, not a rejection.
+    try {
+      await this.prepareDedicatedServer(project);
 
-    await this.start();
+      await this.start();
+    } catch (e) {
+      if (this.state !== CreatorToolsMinecraftState.error) {
+        this.notifyStateChanged(CreatorToolsMinecraftState.error);
+      }
+
+      Log.error("Could not restart the dedicated server: " + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   canPrepare() {
@@ -400,11 +548,28 @@ export default class ProcessHostedMinecraft implements IMinecraft {
   async prepareAndStart(push: MinecraftPush) {
     let worldName = undefined;
 
-    if (this._project) {
-      worldName = await this.prepareDedicatedServer(this._project);
-    }
+    // Callers consume the IPrepareAndStartResult contract - e.g.,
+    // MinecraftDisplay._startClick() checks result.type/errorMessage - so a
+    // rejection from the deploy or from start()'s "<error>" completion
+    // payload must be translated into the error result, not left to
+    // propagate as an unhandled renderer rejection with no user-visible
+    // message.
+    try {
+      if (this._project) {
+        worldName = await this.prepareDedicatedServer(this._project);
+      }
 
-    await this.start();
+      await this.start();
+    } catch (e) {
+      if (this.state !== CreatorToolsMinecraftState.error) {
+        this.notifyStateChanged(CreatorToolsMinecraftState.error);
+      }
+
+      return {
+        type: PrepareAndStartResultType.error,
+        errorMessage: e instanceof Error ? e.message : String(e),
+      };
+    }
 
     return {
       type: PrepareAndStartResultType.started,

@@ -45,12 +45,12 @@ async function openSettings(page: Page): Promise<void> {
 // so the ?debug=true session persists into the editor.
 async function openSettingsWithServerControls(page: Page): Promise<void> {
   await page.goto("/?debug=true", { waitUntil: "load" });
-  await page.waitForTimeout(1000);
+  await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
 
   const newButton = page.getByRole("button", { name: "Create New" }).first();
   await expect(newButton).toBeVisible({ timeout: 15000 });
   await newButton.click();
-  await page.waitForTimeout(800);
+  await page.locator(".MuiDialog-root, dialog, [role='dialog']").first().waitFor({ state: "visible", timeout: 5000 });
 
   await preferBrowserStorageInProjectDialog(page);
   await fillRequiredProjectDialogFields(page);
@@ -59,10 +59,9 @@ async function openSettingsWithServerControls(page: Page): Promise<void> {
   await expect(createButton).toBeVisible({ timeout: 8000 });
   await createButton.click();
 
-  await page.waitForTimeout(3000);
-  await waitForEditorReady(page, 20000);
+  expect(await waitForEditorReady(page, 60000)).toBe(true);
   await selectEditMode(page, "full");
-  await waitForEditorReady(page, 15000);
+  expect(await waitForEditorReady(page, 60000)).toBe(true);
 
   await page.locator('button[title="Settings"], [aria-label="Settings"]').first().click();
   await expect(page.locator(".csp-grid")).toBeVisible({ timeout: 15000 });

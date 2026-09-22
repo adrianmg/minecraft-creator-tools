@@ -253,7 +253,14 @@ export default class JsonFileTagsInfoGenerator implements IProjectInfoGenerator 
 
             zipStorage.storagePath = file.storageRelativePath + "#";
 
-            await zipStorage.loadFromUint8Array(file.content, file.name);
+            // An unreadable container is PACKSIZE's finding to report, not a
+            // reason to abort the JSON tag scan.
+            try {
+              await zipStorage.loadFromUint8Array(file.content, file.name);
+            } catch (e: any) {
+              file.errorStateMessage = e.message ? e.message : e.toString();
+              continue;
+            }
 
             file.fileContainerStorage = zipStorage;
           }

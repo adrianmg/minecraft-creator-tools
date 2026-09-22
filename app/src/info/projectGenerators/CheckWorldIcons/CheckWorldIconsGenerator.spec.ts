@@ -71,4 +71,75 @@ describe("CheckWorldIconsGenerator", () => {
     const errors = results.filter((r) => r.generatorIndex === CheckWorldIconsGeneratorTest.IconNotValidImage);
     expect(errors.length).to.equal(1);
   });
+
+  it("should accept a plain JFIF world icon with no EXIF metadata at the Bedrock size", async () => {
+    // Exported world icons are commonly JFIF JPEGs without an EXIF block;
+    // Exifr yields no metadata for those, so dimensions must come from the
+    // JPEG frame-header fallback in parseImageMetadata.
+    const iconFile = createStubFile({ name: "world_icon.jpeg", content: minimalJfifJpeg(800, 450) });
+    const folder = createStubFolderWithFiles([iconFile]);
+    const item = createStubProjectItem({
+      itemType: ProjectItemType.worldTemplateManifestJson,
+      getFolder: () => folder,
+    });
+    const results = await generator.generate(createStubProject([item]));
+    expect(results.length).to.equal(0);
+  });
+
+  it("should flag a plain JFIF world icon whose frame size is not the Bedrock size", async () => {
+    const iconFile = createStubFile({ name: "world_icon.jpeg", content: minimalJfifJpeg(801, 450) });
+    const folder = createStubFolderWithFiles([iconFile]);
+    const item = createStubProjectItem({
+      itemType: ProjectItemType.worldTemplateManifestJson,
+      getFolder: () => folder,
+    });
+    const results = await generator.generate(createStubProject([item]));
+    const errors = results.filter((r) => r.generatorIndex === CheckWorldIconsGeneratorTest.IconNotValidSize);
+    expect(errors.length).to.equal(1);
+  });
+
+  it("should accept a JFIF world icon whose markers carry legal 0xFF fill bytes", async () => {
+    const plain = minimalJfifJpeg(800, 450);
+    // Insert a fill byte after SOI: FF D8 FF E0 ... becomes FF D8 FF FF E0 ...
+    const padded = new Uint8Array(plain.length + 1);
+    padded.set(plain.subarray(0, 2), 0);
+    padded[2] = 0xff;
+    padded.set(plain.subarray(2), 3);
+    const iconFile = createStubFile({ name: "world_icon.jpeg", content: padded });
+    const folder = createStubFolderWithFiles([iconFile]);
+    const item = createStubProjectItem({
+      itemType: ProjectItemType.worldTemplateManifestJson,
+      getFolder: () => folder,
+    });
+    const results = await generator.generate(createStubProject([item]));
+    expect(results.length).to.equal(0);
+  });
+
+  it("should flag a JPEG whose frame segment is truncated before its declared length", async () => {
+    // SOF0 declares a 17-byte segment (00 11) but the stream ends after 5
+    // payload bytes; dimensions from such a frame must not be trusted.
+    const truncated = new Uint8Array([
+      0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0xc2, 0x03, 0x20, 0x03, 0xff, 0xd9,
+    ]);
+    const iconFile = createStubFile({ name: "world_icon.jpeg", content: truncated });
+    const folder = createStubFolderWithFiles([iconFile]);
+    const item = createStubProjectItem({
+      itemType: ProjectItemType.worldTemplateManifestJson,
+      getFolder: () => folder,
+    });
+    const results = await generator.generate(createStubProject([item]));
+    const errors = results.filter((r) => r.generatorIndex === CheckWorldIconsGeneratorTest.IconNotValidImage);
+    expect(errors.length).to.equal(1);
+  });
 });
+
+/** A minimal JFIF JPEG (SOI + APP0 + SOF0 + EOI) with no EXIF segment. */
+function minimalJfifJpeg(width: number, height: number): Uint8Array {
+  return new Uint8Array([
+    0xff, 0xd8, // SOI
+    0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, // APP0 "JFIF"
+    0xff, 0xc0, 0x00, 0x11, 0x08, (height >> 8) & 0xff, height & 0xff, (width >> 8) & 0xff, width & 0xff, // SOF0
+    0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+    0xff, 0xd9, // EOI
+  ]);
+}

@@ -328,6 +328,10 @@ import {
   McToolsLmTools,
 } from "./providers";
 import McPreviewPanel from "./McPreviewPanel";
+import MinecraftDebuggerExtension, {
+  MinecraftDebuggerExtensionId,
+  MinecraftDebuggerGuidanceFlavor,
+} from "../devproject/MinecraftDebuggerExtension";
 import { LogMask } from "../core/logging/LogLevel";
 import VSCodeLogger from "../core/logging/VSCodeLogger";
 import LogFilter from "../core/logging/LogFilter";
@@ -340,6 +344,7 @@ export default class ExtensionManager {
 
   isActivated = false;
   _willBeRebooted = false;
+  _minecraftDebuggerGuidanceDisplayState = { hasShown: false };
   processHostedMinecraft: IMinecraft | undefined;
   gameMinecraft: IMinecraft | undefined;
 
@@ -1364,6 +1369,61 @@ export default class ExtensionManager {
     return true;
   }
 
+  /**
+   * Detects whether the official Mojang Minecraft Bedrock Debugger extension is installed and
+   * surfaces guidance. Not-installed users get actionable install/open guidance; installed users
+   * still get the message with the flavor's attach notice: for managed BDS the socket-handoff
+   * notice, because managed BDS enables MCT's diagnostics streaming by default and MCT can
+   * already hold the single permitted debug socket when they attach; for remote mode, remote
+   * attach guidance; and for the local game, local-game attach guidance - the game-proxy path
+   * talks over the command WebSocket and does not own the BDS script-debug socket, so the
+   * managed-server handoff instructions (a world setting and a server restart the user does
+   * not have) must not be prescribed there. ALL THREE developUsingXxx
+   * entry points invoke this - remote users still need extension install guidance, since remote
+   * script debugging is supported. Intentionally never installs the extension programmatically —
+   * actions only open the extension page so the user makes the install choice. Shown at most
+   * once per session, except that a remote-first user still receives the local handoff notice
+   * on later entering a local managed mode (show-once flow and message composition live in
+   * MinecraftDebuggerExtension.displayGuidanceOnce, which is platform-neutral and unit tested).
+   */
+  public ensureMinecraftDebuggerGuidance(
+    flavor: MinecraftDebuggerGuidanceFlavor = MinecraftDebuggerGuidanceFlavor.localManaged
+  ) {
+    const installedExtension = vscode.extensions.getExtension(MinecraftDebuggerExtensionId);
+    const installedVersion = installedExtension
+      ? (installedExtension.packageJSON?.version as string | undefined) ?? "unknown"
+      : undefined;
+
+    MinecraftDebuggerExtension.displayGuidanceOnce(
+      installedVersion,
+      this._minecraftDebuggerGuidanceDisplayState,
+      (message, actionTitles) => {
+        vscode.window.showInformationMessage(message, ...actionTitles).then(async (selectedTitle) => {
+          const guidance = MinecraftDebuggerExtension.getGuidance(installedVersion, flavor);
+          const action = guidance.actions.find((candidate) => candidate.title === selectedTitle);
+
+          if (!action) {
+            return;
+          }
+
+          if (action.commandId) {
+            try {
+              await vscode.commands.executeCommand(action.commandId, ...(action.commandArguments ?? []));
+              return;
+            } catch (e) {
+              Log.debug("Could not run command '" + action.commandId + "': " + e);
+            }
+          }
+
+          if (action.url) {
+            vscode.env.openExternal(vscode.Uri.parse(action.url));
+          }
+        });
+      },
+      flavor
+    );
+  }
+
   async developUsingMinecraftGameCommand(context: IContext, name: string, args: string[]) {
     await this.developUsingMinecraftGame();
     return { status: CommandStatus.completed };
@@ -1382,6 +1442,8 @@ export default class ExtensionManager {
 
       vscode.window.showInformationMessage("Developing using the Minecraft game hosted on this PC.");
     }
+
+    this.ensureMinecraftDebuggerGuidance(MinecraftDebuggerGuidanceFlavor.localGame);
   }
 
   async developUsingRemoteMinecraftCommand(context: IContext, name: string, args: string[]) {
@@ -1401,6 +1463,12 @@ export default class ExtensionManager {
 
       vscode.window.showInformationMessage("Developing using a remotely hosted Minecraft Dedicated Server hosted.");
     }
+
+    // Remote script debugging is supported, so remote users need the
+    // extension install guidance too - with the remote attach notice
+    // rather than the local socket-handoff instructions, which reference
+    // managed-server settings that do not exist for a remote host.
+    this.ensureMinecraftDebuggerGuidance(MinecraftDebuggerGuidanceFlavor.remote);
   }
 
   async developUsingDedicatedServerCommand(context: IContext, name: string, args: string[]) {
@@ -1440,6 +1508,8 @@ export default class ExtensionManager {
 
       vscode.window.showInformationMessage("Developing using built-in Minecraft Bedrock Dedicated Server.");
     }
+
+    this.ensureMinecraftDebuggerGuidance();
 
     if (this.processHostedMinecraft) {
       vscode.window.showInformationMessage("Starting Minecraft Bedrock Dedicated Server.");

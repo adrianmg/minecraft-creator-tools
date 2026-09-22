@@ -10,7 +10,8 @@ import ContentIndex from "../../../core/ContentIndex";
 import IFolder from "../../../storage/IFolder";
 import StorageUtilities from "../../../storage/StorageUtilities";
 import ProjectInfoUtilities from "../../ProjectInfoUtilities";
-import { PackSizeInfoGeneratorTest, IPackSizeInfoGeneratorResults } from "./PackSizeInfoData";
+import { PackSizeInfoGeneratorTest, IPackSizeInfoGeneratorResults, PackSizeValidationRules } from "./PackSizeInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { PackSizeInfoGeneratorTest };
 export type { IPackSizeInfoGeneratorResults };
@@ -20,10 +21,12 @@ export type { IPackSizeInfoGeneratorResults };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/packsize.form.json} for topic definitions
  */
-export default class PackSizeInfoGenerator implements IProjectInfoGenerator {
+export default class PackSizeInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "PACKSIZE";
   title = "Pack Size Information";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = PackSizeValidationRules;
 
   performAddOnValidations = false;
 
@@ -198,7 +201,7 @@ export default class PackSizeInfoGenerator implements IProjectInfoGenerator {
                 PackSizeInfoGeneratorTest.zipFileCouldNotBeProcessed,
                 ProjectInfoUtilities.getTitleFromEnum(
                   PackSizeInfoGeneratorTest,
-                  PackSizeInfoGeneratorTest.exceedsRecommendedPackageSize
+                  PackSizeInfoGeneratorTest.zipFileCouldNotBeProcessed
                 ),
                 undefined,
                 file.errorStateMessage

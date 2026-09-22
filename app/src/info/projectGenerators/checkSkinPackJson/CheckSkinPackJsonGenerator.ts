@@ -18,7 +18,12 @@ import IFile from "../../../storage/IFile";
 import LocManager from "../../../minecraft/LocManager";
 import { getSkinTargetFromName } from "../../../minecraft/textures/TextureUtilities";
 import TextureDefinition from "../../../minecraft/TextureDefinition";
-import { CheckSkinPackJsonTests as Tests } from "./CheckSkinPackJsonData";
+import {
+  CheckSkinPackJsonTests as Tests,
+  CheckSkinPackJsonUnwiredTests as UnwiredTests,
+  SkinPackValidationRules,
+} from "./CheckSkinPackJsonData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 const MaxFreeSkins = 2;
 const MaxSkinsInAPack = 80;
@@ -29,10 +34,12 @@ const LeadingOrTrailingSpaceRegex = /^\s+|\s+$/;
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/cspj.form.json} for topic definitions
  */
-export default class CheckSkinPackJsonGenerator implements IProjectInfoGenerator {
+export default class CheckSkinPackJsonGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id: string = "CSPJ";
   title: string = "Skin Pack Validation";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = SkinPackValidationRules;
 
   async generate(project: Project): Promise<ProjectInfoItem[]> {
     const skinPackManifestItems = project.getItemsByType(ProjectItemType.skinPackManifestJson);
@@ -48,7 +55,7 @@ export default class CheckSkinPackJsonGenerator implements IProjectInfoGenerator
 
       if (!skinPack) {
         allResults.push(
-          resultFromTest(Tests.CouldNotFindRelatedPack, {
+          resultFromTest(UnwiredTests.CouldNotFindRelatedPack, {
             id: this.id,
             item: skinPackManifestItem,
             data: skinPackManifestItem.name,

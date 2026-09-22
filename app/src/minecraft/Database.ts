@@ -175,7 +175,7 @@ export default class Database {
     "1.21": "120",
   };
 
-  static moduleDescriptors: { [id: string]: NpmModule } = {};
+  static moduleDescriptors: { [id: string]: NpmModule | undefined } = {};
 
   static blockTypes: { [id: string]: BlockType } = {};
   static schemaContents: { [id: string]: object } = {};
@@ -601,7 +601,10 @@ export default class Database {
   }
 
   static async getModuleDescriptor(moduleId: string) {
-    if (Database.moduleDescriptors[moduleId]) {
+    // A key explicitly present with an undefined value is a known-missing
+    // module (seeded by tests for deterministic offline behavior); only
+    // modules never looked at fall through to the registry fetch.
+    if (moduleId in Database.moduleDescriptors) {
       return Database.moduleDescriptors[moduleId];
     }
 

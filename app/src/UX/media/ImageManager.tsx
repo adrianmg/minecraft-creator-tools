@@ -4,11 +4,12 @@ import "./ImageManager.css";
 import React from "react";
 import IPersistable from "../types/IPersistable";
 import CreatorTools from "../../app/CreatorTools";
-import { IconButton } from "@mui/material";
+import { Button, IconButton } from "@mui/material";
 import StorageUtilities from "../../storage/StorageUtilities";
 import Utilities from "../../core/Utilities";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faEdit } from "@fortawesome/free-regular-svg-icons";
+import { faEdit, faEye } from "@fortawesome/free-regular-svg-icons";
+import { CustomLabel } from "../shared/components/feedback/labels/Labels";
 import ImageEditor from "./ImageEditor";
 import ProjectItem from "../../app/ProjectItem";
 import ImageCodec from "../../core/ImageCodec";
@@ -114,6 +115,13 @@ class ImageManager extends Component<IImageManagerProps, IImageManagerState> {
 
     if (!this.props.file.isContentLoaded) {
       await this.props.file.loadContent();
+
+      // Edit mode renders from state.fileToEdit.content, so a load that
+      // completes while the editor is open (e.g. Edit clicked before the
+      // content arrived) needs a render to replace the no-content fallback.
+      if (!this.state.isView) {
+        this.forceUpdate();
+      }
     }
 
     const fileType = StorageUtilities.getTypeFromName(this.props.file.name);
@@ -214,16 +222,36 @@ class ImageManager extends Component<IImageManagerProps, IImageManagerState> {
 
   render() {
     let editToggle = <></>;
+    let previewToggle: React.ReactNode = undefined;
     let interior = <></>;
 
+    // The mode toggle floats over the image only while previewing. In edit
+    // mode it is handed to the editor toolbar instead, otherwise the floating
+    // button lands on top of the toolbar's first tool (Undo).
     if (!this.props.readOnly && this.props.projectItem) {
-      editToggle = (
-        <div className="ifm-float">
-          <IconButton onClick={this._toggleEdit} size="small" title={this.props.intl.formatMessage({ id: "project_editor.image_mgr.edit_image" })} aria-label={this.props.intl.formatMessage({ id: "project_editor.image_mgr.edit_image" })}>
-            <FontAwesomeIcon icon={faEdit} className="fa-lg" />
-          </IconButton>
-        </div>
-      );
+      if (this.state.isView) {
+        const editTitle = this.props.intl.formatMessage({ id: "project_editor.image_mgr.edit_image" });
+
+        editToggle = (
+          <div className="ifm-float">
+            <IconButton onClick={this._toggleEdit} size="small" title={editTitle} aria-label={editTitle}>
+              <FontAwesomeIcon icon={faEdit} className="fa-lg" />
+            </IconButton>
+          </div>
+        );
+      } else {
+        const previewTitle = this.props.intl.formatMessage({ id: "project_editor.image_mgr.preview_image" });
+
+        previewToggle = (
+          <Button onClick={this._toggleEdit} title={previewTitle} aria-label={previewTitle}>
+            <CustomLabel
+              isCompact={false}
+              text={this.props.intl.formatMessage({ id: "project_editor.image_mgr.preview" })}
+              icon={<FontAwesomeIcon icon={faEye} className="fa-lg" />}
+            />
+          </Button>
+        );
+      }
     }
 
     if (this.state.isView) {
@@ -243,10 +271,18 @@ class ImageManager extends Component<IImageManagerProps, IImageManagerState> {
             name={this.state.fileToEdit.name}
             content={this.state.fileToEdit.content}
             setActivePersistable={this.props.setActivePersistable}
+            toolbarEndContent={previewToggle}
           />
         );
       } else {
-        interior = <div>({this.props.intl.formatMessage({ id: "project_editor.image_mgr.no_content" })})</div>;
+        // No editor toolbar to host the Preview toggle here, so keep it next
+        // to the message; otherwise there is no way back out of edit mode.
+        interior = (
+          <div className="ifm-noContent">
+            <span>({this.props.intl.formatMessage({ id: "project_editor.image_mgr.no_content" })})</span>
+            {previewToggle}
+          </div>
+        );
       }
     }
 

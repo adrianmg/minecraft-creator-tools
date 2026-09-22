@@ -5,17 +5,26 @@ import ProjectItem from "../../../app/ProjectItem";
 import { resultFromTest } from "../../tests/TestDefinition";
 import { getWorldTemplates } from "../../../app/ProjectItemUtilities";
 import StorageUtilities from "../../../storage/StorageUtilities";
-import { ForbiddenTests, AllowedExtensionsByType, BlockedFilesByType, PackageType } from "./CheckForbiddenFilesData";
+import {
+  ForbiddenTests,
+  ForbiddenFilesValidationRules,
+  AllowedExtensionsByType,
+  BlockedFilesByType,
+  PackageType,
+} from "./CheckForbiddenFilesData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 /**
  * Validates files against forbidden file lists and allowed extensions.
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/forbfile.form.json} for topic definitions
  */
-export default class CheckForbiddenFilesGenerator implements IProjectInfoGenerator {
+export default class CheckForbiddenFilesGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id: string = "FORBFILE";
   title: string = "Forbidden Files";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = ForbiddenFilesValidationRules;
 
   async generate(project: Project): Promise<ProjectInfoItem[]> {
     const packs = project.packs.map((pack) => [pack.getPackItems(), pack.packType] as const);

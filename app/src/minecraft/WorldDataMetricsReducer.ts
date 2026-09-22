@@ -2,10 +2,11 @@
 // Licensed under the MIT License.
 
 import DataUtilities from "../core/DataUtilities";
-import { ILevelDbParsedRecord } from "./LevelDb";
+import type { ILevelDbParsedRecord } from "./LevelDb";
 
 export interface IWorldDataMetrics {
   chunkCount: number;
+  customDimensionChunkCount: number;
   subchunkLessChunkCount: number;
   minX?: number;
   maxX?: number;
@@ -16,7 +17,7 @@ export interface IWorldDataMetrics {
   dimensionNameIdTableBytes?: Uint8Array;
 }
 
-interface IChunkRecordMetadata {
+export interface IChunkRecordMetadata {
   chunkKey: string;
   dimension: number;
   x: number;
@@ -26,25 +27,87 @@ interface IChunkRecordMetadata {
 }
 
 const LevelChunkTags = new Set<number>([
-  43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 118, 119, 120,
+  43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 72, 115, 118, 119,
+  120,
 ]);
 
 const SubchunkPrefixTag = 47;
 
+const NamedWorldRecordPrefixes = [
+  "AutonomousEntities",
+  "schedulerWT",
+  "Overworld",
+  "BiomeData",
+  "digp",
+  "actorprefix",
+  "player",
+  "portals",
+  "LevelChunk",
+  "structuretemplate",
+  "~local_player",
+  "game_",
+  "CustomProperties",
+  "DynamicProperties",
+  "LevelSpawnWasFixed",
+  "VILLAGE_",
+  "gametestinstance_",
+  "tickingarea_",
+  "map_",
+  "scoreboard",
+  "SavedEntity",
+  "ServerMapRuntime",
+  "VillageRuntime",
+  "WorldFeatureRuntime",
+  "WorldGenerationRuntime",
+  "WorldStreamRuntime",
+  "BSharpRuntime",
+  "BadgerSynced",
+  "CinematicsRuntime",
+  "CustomGameOptions",
+  "DeckRuntime",
+  "EntityFactorySetup",
+  "GeologyRuntime",
+  "InvasionRuntime",
+  "MapRevealRuntime",
+  "RealmsStoriesData",
+  "mobevents",
+  "dimension",
+  "structureplacement",
+  "chunk_loaded_request",
+  "legacy_console_player",
+  "PosTrackDB",
+  "PositionTrackDB",
+  "OwnedEntitiesLimbo",
+  "MCeditMap",
+  "EDU_CurrentCodingURL",
+  "TheEnd",
+  "SST_",
+  "SUSP",
+  "neteaseData",
+  "scriptGid",
+  "Nether",
+  "game_flatworldlayers",
+];
+
 export default class WorldDataMetricsReducer {
   private _effectiveRecordsByKey = new Map<string, IChunkRecordMetadata>();
+  private _recordVersionsByKey = new Map<string, { sourceKind: "ldb" | "log"; sequenceNumber?: bigint }>();
   private _hasDimensionNameIdTable = false;
   private _dimensionNameIdTableBytes?: Uint8Array;
 
   visit(record: ILevelDbParsedRecord) {
     if (record.key === "DimensionNameIdTable") {
+      if (!this._shouldApplyRecord(record, record.key)) {
+        return;
+      }
+
       this._hasDimensionNameIdTable = !record.isDeleted;
       this._dimensionNameIdTableBytes =
         !record.isDeleted && record.value ? new Uint8Array(record.value) : undefined;
       return;
     }
 
-    if (record.key.startsWith("digp")) {
+    if (WorldDataMetricsReducer.isNamedWorldRecordKey(record.key)) {
       return;
     }
 
@@ -55,6 +118,9 @@ export default class WorldDataMetricsReducer {
     }
 
     const identity = WorldDataMetricsReducer.getRecordIdentity(record.keyBytes);
+    if (!this._shouldApplyRecord(record, identity)) {
+      return;
+    }
 
     if (record.isDeleted) {
       this._effectiveRecordsByKey.delete(identity);
@@ -63,12 +129,33 @@ export default class WorldDataMetricsReducer {
     }
   }
 
+  private _shouldApplyRecord(record: ILevelDbParsedRecord, identity: string): boolean {
+    const currentVersion = this._recordVersionsByKey.get(identity);
+    const sequenceNumber = record.sequenceNumber === undefined ? undefined : BigInt(record.sequenceNumber);
+
+    if (
+      sequenceNumber !== undefined &&
+      currentVersion?.sequenceNumber !== undefined &&
+      currentVersion.sequenceNumber >= sequenceNumber
+    ) {
+      return false;
+    }
+
+    this._recordVersionsByKey.set(identity, { sourceKind: record.sourceKind, sequenceNumber });
+    return true;
+  }
+
   getMetrics(): IWorldDataMetrics {
     const chunks = new Map<string, { x: number; z: number; hasSubchunk: boolean }>();
+    const customDimensionChunks = new Set<string>();
     const dimensionIds = new Set<number>();
 
     for (const metadata of this._effectiveRecordsByKey.values()) {
       dimensionIds.add(metadata.dimension);
+
+      if (metadata.dimension >= 1000) {
+        customDimensionChunks.add(metadata.chunkKey);
+      }
 
       if (!metadata.includeInWorldMetrics) {
         continue;
@@ -88,6 +175,7 @@ export default class WorldDataMetricsReducer {
 
     const metrics: IWorldDataMetrics = {
       chunkCount: chunks.size,
+      customDimensionChunkCount: customDimensionChunks.size,
       subchunkLessChunkCount: 0,
       dimensionIds,
       hasDimensionNameIdTable: this._hasDimensionNameIdTable,
@@ -123,7 +211,15 @@ export default class WorldDataMetricsReducer {
     return reducer.getMetrics();
   }
 
-  private static getChunkRecordMetadata(keyBytes: Uint8Array): IChunkRecordMetadata | undefined {
+  static isNamedWorldRecordKey(key: string): boolean {
+    return (
+      NamedWorldRecordPrefixes.some((prefix) => key.startsWith(prefix)) ||
+      key.includes("WasPicked") ||
+      key.includes("TextIg")
+    );
+  }
+
+  static getChunkRecordMetadata(keyBytes: Uint8Array): IChunkRecordMetadata | undefined {
     if (keyBytes.length !== 9 && keyBytes.length !== 10 && keyBytes.length !== 13 && keyBytes.length !== 14) {
       return undefined;
     }

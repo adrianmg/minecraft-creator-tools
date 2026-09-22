@@ -25,7 +25,7 @@ export default defineConfig({
   // Exclude ServerUI tests - they require a running MCT server started via globalSetup/globalTeardown
   // and have their own dedicated config (playwright-serverui.config.ts).
   // Run ServerUI tests separately with: npm run test-server-ui
-  testIgnore: ["**/ServerUI.spec.ts"],
+  testIgnore: ["**/ServerUI.spec.ts", "**/ServerApi.spec.ts"],
 
   outputDir: "./debugoutput/playwright-production-results",
 

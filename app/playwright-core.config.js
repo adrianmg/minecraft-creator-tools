@@ -24,9 +24,9 @@ export default defineConfig({
   // Warm up Vite dev server before running tests — prevents cold-start timeouts
   globalSetup: "./src/testweb/globalSetup.ts",
 
-  // Match the default config timeout — 60s accommodates enterEditor() waits,
-  // axe-core accessibility scans, and cold-start Vite dev server startup.
-  timeout: 60000,
+  // Allow enterEditor() to absorb a cold Vite project load plus mode selection
+  // without the enclosing test timing out first.
+  timeout: 90000,
 
   // Overall wall-clock budget for the entire core suite. The `build` CI job has a
   // 45-minute `timeout-minutes` cap that also covers install, preparedevenv,
@@ -44,7 +44,7 @@ export default defineConfig({
   grep: /@focused/,
 
   // Exclude ServerUI tests — they require a running MCT server
-  testIgnore: ["**/ServerUI.spec.ts"],
+  testIgnore: ["**/ServerUI.spec.ts", "**/ServerApi.spec.ts"],
 
   outputDir: "./debugoutput/playwright-core-test-results",
 
@@ -66,6 +66,9 @@ export default defineConfig({
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
     baseURL,
+
+    // The home page eagerly compiles a large Vite module graph on a cold runner.
+    navigationTimeout: 90000,
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: "on-first-retry",

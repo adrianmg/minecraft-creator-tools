@@ -13,7 +13,7 @@
  *   node scripts/generate-pseudo-locale.mjs   (generates src/locales/pseudo.json)
  *   npm run web                               (starts Vite dev server on :3000)
  */
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, Locator, Page } from "@playwright/test";
 import { processMessage, waitForEditorReady } from "./WebTestUtilities";
 import type { ConsoleMessage } from "@playwright/test";
 
@@ -111,11 +111,11 @@ interface UnlocalizedString {
  * Collect all visible text nodes on the current page and return those
  * that are neither marker-wrapped nor allowlisted.
  */
-async function collectUnlocalizedText(page: Page): Promise<UnlocalizedString[]> {
-  return page.evaluate(
-    ({ MARKER_START, MARKER_END }) => {
+async function collectUnlocalizedText(scope: Locator): Promise<UnlocalizedString[]> {
+  return scope.evaluate(
+    (root, { MARKER_START, MARKER_END }) => {
       const results: { text: string; selector: string; context: string }[] = [];
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
         acceptNode(node) {
           const text = node.textContent?.trim();
           if (!text) return NodeFilter.FILTER_REJECT;
@@ -180,13 +180,13 @@ async function collectUnlocalizedText(page: Page): Promise<UnlocalizedString[]> 
  * marker-wrapped nor allowlisted. These attributes carry user-facing
  * text (screen-reader labels, tooltips) that must also be localized.
  */
-async function collectUnlocalizedAttributes(page: Page): Promise<UnlocalizedString[]> {
-  return page.evaluate(
-    ({ MARKER_START, MARKER_END }) => {
+async function collectUnlocalizedAttributes(scope: Locator): Promise<UnlocalizedString[]> {
+  return scope.evaluate(
+    (root, { MARKER_START, MARKER_END }) => {
       const results: { text: string; selector: string; context: string }[] = [];
       const attrs = ["aria-label", "title", "placeholder"];
 
-      const elements = document.querySelectorAll("[aria-label], [title], [placeholder]");
+      const elements = root.querySelectorAll("[aria-label], [title], [placeholder]");
       for (const el of elements) {
         // Skip invisible elements
         const style = window.getComputedStyle(el);
@@ -199,8 +199,7 @@ async function collectUnlocalizedAttributes(page: Page): Promise<UnlocalizedStri
           if (!value) continue;
           if (value.includes(MARKER_START)) continue; // Has markers — localized
 
-          const selector =
-            el.tagName.toLowerCase() + (el.className ? "." + String(el.className).split(" ")[0] : "");
+          const selector = el.tagName.toLowerCase() + (el.className ? "." + String(el.className).split(" ")[0] : "");
           results.push({ text: `[${attr}] ${value}`, selector, context: attr });
         }
       }
@@ -214,10 +213,10 @@ async function collectUnlocalizedAttributes(page: Page): Promise<UnlocalizedStri
 /**
  * Collect both text-node and attribute unlocalized strings in one pass.
  */
-async function collectAllUnlocalized(page: Page): Promise<UnlocalizedString[]> {
+async function collectAllUnlocalized(page: Page, scope = page.locator("body")): Promise<UnlocalizedString[]> {
   const [textResults, attrResults] = await Promise.all([
-    collectUnlocalizedText(page),
-    collectUnlocalizedAttributes(page),
+    collectUnlocalizedText(scope),
+    collectUnlocalizedAttributes(scope),
   ]);
   return [...textResults, ...attrResults];
 }
@@ -267,7 +266,7 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
       console.log(`  Total: ${failures.length} unlocalized strings\n`);
     }
 
-    // Soft-fail: report but don't break the build yet.  
+    // Soft-fail: report but don't break the build yet.
     // Change to expect(failures).toHaveLength(0) once fully localized.
     expect(failures.length).toBeGreaterThanOrEqual(0);
 
@@ -280,15 +279,17 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
 
   test("project editor — all visible text should be localized", async ({ page }) => {
     // Enter editor with pseudo locale via query param
-    await page.goto("/?locale=pseudo");
-    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    await page.goto("/?locale=pseudo", { waitUntil: "load" });
+    await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
 
     // Create a new project to enter the editor
     const newButton = page.getByRole("button", { name: "Create New" }).first();
     if (!(await newButton.isVisible({ timeout: 5000 }).catch(() => false))) {
       // Try a ⟦Create New⟧ variant since text is pseudo-localized
-      const pseudoNewButton = page.getByRole("button").filter({ hasText: /Create New/ }).first();
+      const pseudoNewButton = page
+        .getByRole("button")
+        .filter({ hasText: /Create New/ })
+        .first();
       if (await pseudoNewButton.isVisible({ timeout: 3000 }).catch(() => false)) {
         await pseudoNewButton.click();
       } else {
@@ -299,7 +300,7 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
       await newButton.click();
     }
 
-    await page.waitForTimeout(1500);
+    await expect(page.locator(".MuiDialog-root, dialog, [role='dialog']").first()).toBeVisible({ timeout: 5000 });
 
     // Creator Name is required and not pre-filled, so populate it before submitting.
     await fillCreatorName(page);
@@ -312,19 +313,16 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
       await page.keyboard.press("Enter");
     }
 
-    await page.waitForTimeout(5000);
-    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-
     // Wait for editor readiness
-    await waitForEditorReady(page, 20000);
+    expect(await waitForEditorReady(page, 60000)).toBe(true);
 
     // Dismiss FRE panel if present
-    const closeButton = page
-      .locator('[aria-label*="Dismiss"], [aria-label*="Close"], button:has-text("×")')
-      .first();
+    const closeButton = page.locator('[aria-label*="Dismiss"], [aria-label*="Close"], button:has-text("×")').first();
     if (await closeButton.isVisible({ timeout: 2000 }).catch(() => false)) {
       await closeButton.click();
-      await page.waitForTimeout(500);
+      await expect(closeButton)
+        .toBeHidden({ timeout: 5000 })
+        .catch(() => {});
     }
 
     const unloc = await collectAllUnlocalized(page);
@@ -401,7 +399,10 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
 
     // Click Create New to open the project creation dialog
     const newButton = page.getByRole("button", { name: "Create New" }).first();
-    const pseudoNewButton = page.getByRole("button").filter({ hasText: /Create New/ }).first();
+    const pseudoNewButton = page
+      .getByRole("button")
+      .filter({ hasText: /Create New/ })
+      .first();
     if (await newButton.isVisible({ timeout: 5000 }).catch(() => false)) {
       await newButton.click();
     } else if (await pseudoNewButton.isVisible({ timeout: 3000 }).catch(() => false)) {
@@ -416,7 +417,12 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
     // The project creation dialog should now be open — scan it for unlocalized strings
     // This covers McDialog's Cancel/OK defaults and any dialog content
     const dialogLocator = page.locator('[role="dialog"], .MuiDialog-root, .MuiModal-root');
-    if (!(await dialogLocator.first().isVisible({ timeout: 3000 }).catch(() => false))) {
+    if (
+      !(await dialogLocator
+        .first()
+        .isVisible({ timeout: 3000 })
+        .catch(() => false))
+    ) {
       test.skip(true, "Project creation dialog did not appear");
       return;
     }
@@ -442,13 +448,15 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
 
   test("project editor with delete confirmation — dialog buttons should be localized", async ({ page }) => {
     // Enter editor with pseudo locale
-    await page.goto("/?locale=pseudo");
-    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    await page.goto("/?locale=pseudo", { waitUntil: "load" });
+    await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
 
     // Create a new project to enter the editor
     const newButton = page.getByRole("button", { name: "Create New" }).first();
-    const pseudoNewButton = page.getByRole("button").filter({ hasText: /Create New/ }).first();
+    const pseudoNewButton = page
+      .getByRole("button")
+      .filter({ hasText: /Create New/ })
+      .first();
     if (await newButton.isVisible({ timeout: 5000 }).catch(() => false)) {
       await newButton.click();
     } else if (await pseudoNewButton.isVisible({ timeout: 3000 }).catch(() => false)) {
@@ -458,7 +466,7 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
       return;
     }
 
-    await page.waitForTimeout(1500);
+    await expect(page.locator(".MuiDialog-root, dialog, [role='dialog']").first()).toBeVisible({ timeout: 5000 });
 
     // Creator Name is required and not pre-filled, so populate it before submitting.
     await fillCreatorName(page);
@@ -470,17 +478,15 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
       await page.keyboard.press("Enter");
     }
 
-    await page.waitForTimeout(5000);
-    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-    await waitForEditorReady(page, 20000);
+    expect(await waitForEditorReady(page, 60000)).toBe(true);
 
     // Dismiss FRE panel if present
-    const closeButton = page
-      .locator('[aria-label*="Dismiss"], [aria-label*="Close"], button:has-text("×")')
-      .first();
+    const closeButton = page.locator('[aria-label*="Dismiss"], [aria-label*="Close"], button:has-text("×")').first();
     if (await closeButton.isVisible({ timeout: 2000 }).catch(() => false)) {
       await closeButton.click();
-      await page.waitForTimeout(500);
+      await expect(closeButton)
+        .toBeHidden({ timeout: 5000 })
+        .catch(() => {});
     }
 
     // Try to right-click the first project tree item to trigger context menu
@@ -568,9 +574,8 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
   });
 
   test("content wizard — wizard dialog text and attributes should be localized", async ({ page }) => {
-    await page.goto("/?locale=pseudo");
-    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    await page.goto("/?locale=pseudo", { waitUntil: "load" });
+    await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
 
     // Click a goal card (e.g. Make Mob) to open the content wizard dialog
     const goalCard = page
@@ -584,7 +589,7 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
     }
 
     await goalCard.click();
-    await page.waitForTimeout(2000);
+    await expect(page.locator(".MuiDialog-root, dialog, [role='dialog']").first()).toBeVisible({ timeout: 5000 });
 
     const unloc = await collectAllUnlocalized(page);
     const failures = unloc.filter((u) => !isAllowlisted(u.text));
@@ -607,12 +612,14 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
 
   test("settings page — all visible text should be localized", async ({ page }) => {
     // Enter editor with pseudo locale: create a new project first
-    await page.goto("/?locale=pseudo");
-    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    await page.goto("/?locale=pseudo", { waitUntil: "load" });
+    await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
 
     const newButton = page.getByRole("button", { name: "Create New" }).first();
-    const pseudoNewButton = page.getByRole("button").filter({ hasText: /Create New/ }).first();
+    const pseudoNewButton = page
+      .getByRole("button")
+      .filter({ hasText: /Create New/ })
+      .first();
     if (await newButton.isVisible({ timeout: 5000 }).catch(() => false)) {
       await newButton.click();
     } else if (await pseudoNewButton.isVisible({ timeout: 3000 }).catch(() => false)) {
@@ -622,7 +629,7 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
       return;
     }
 
-    await page.waitForTimeout(1500);
+    await expect(page.locator(".MuiDialog-root, dialog, [role='dialog']").first()).toBeVisible({ timeout: 5000 });
 
     const createButton = page.getByTestId("submit-button");
     if (await createButton.isVisible({ timeout: 3000 }).catch(() => false)) {
@@ -631,9 +638,7 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
       await page.keyboard.press("Enter");
     }
 
-    await page.waitForTimeout(5000);
-    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-    await waitForEditorReady(page, 20000);
+    expect(await waitForEditorReady(page, 60000)).toBe(true);
 
     // Click the settings gear button
     const settingsButton = page
@@ -641,7 +646,10 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
       .first();
     if (!(await settingsButton.isVisible({ timeout: 5000 }).catch(() => false))) {
       // Try pseudo-localized variant
-      const pseudoSettingsButton = page.locator("button").filter({ hasText: /Settings/ }).first();
+      const pseudoSettingsButton = page
+        .locator("button")
+        .filter({ hasText: /Settings/ })
+        .first();
       if (await pseudoSettingsButton.isVisible({ timeout: 3000 }).catch(() => false)) {
         await pseudoSettingsButton.click();
       } else {
@@ -652,9 +660,10 @@ test.describe("Pseudo-Locale Coverage @locale", () => {
       await settingsButton.click();
     }
 
-    await page.waitForTimeout(2000);
+    const settingsPanel = page.locator(".csp-grid");
+    await expect(settingsPanel).toBeVisible({ timeout: 15000 });
 
-    const unloc = await collectAllUnlocalized(page);
+    const unloc = await collectAllUnlocalized(page, settingsPanel);
     const failures = unloc.filter((u) => !isAllowlisted(u.text));
 
     if (failures.length > 0) {

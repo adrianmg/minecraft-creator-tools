@@ -225,6 +225,20 @@ contextBridge.exposeInMainWorld("api", {
         case "asyncwebSocketCommand":
           return ipcRenderer.invoke("asyncwebSocketCommand", position + "|" + data);
 
+        // Script debugger commands. These were previously missing from this
+        // whitelist, so every debug action from the renderer failed with
+        // "PLD: Unknown command" before reaching the main process.
+        case "asyncdebugPause":
+        case "asyncdebugResume":
+        case "asyncdebugStartProfiler":
+        case "asyncdebugStopProfiler":
+        case "asyncdebugReattach":
+        case "asyncdebugRetryConnection":
+        case "asyncgetDedicatedServerDebugStatus":
+        case "asyncgetDebugDiagnostics":
+        case "asyncgetDebugStatus":
+          return ipcRenderer.invoke(commandName, position + "|" + data);
+
         case "asyncshellOpenPath":
           _validateExecutableFilePath(data);
 

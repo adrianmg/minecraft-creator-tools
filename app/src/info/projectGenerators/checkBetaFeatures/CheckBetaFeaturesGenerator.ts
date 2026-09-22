@@ -5,17 +5,20 @@ import { tryEnsureFiles } from "../../../app/ProjectItemUtilities";
 import StorageUtilities from "../../../storage/StorageUtilities";
 import { resultFromTest } from "../../tests/TestDefinition";
 import { filterAndSeparate } from "../../../core/ArrayUtilities";
-import { CheckBetaTests, JsonTypesToRead } from "./CheckBetaFeaturesData";
+import { CheckBetaFeaturesValidationRules, CheckBetaTests, JsonTypesToRead } from "./CheckBetaFeaturesData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 /**
  * Validates that beta features flags are not used in custom definitions.
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/cbfg.form.json} for topic definitions
  */
-export default class CheckBetaFeaturesGenerator implements IProjectInfoGenerator {
+export default class CheckBetaFeaturesGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id: string = "CBFG";
   title: string = "Beta Features";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = CheckBetaFeaturesValidationRules;
 
   async generate(project: Project): Promise<ProjectInfoItem[]> {
     const items = project.getItemsCopy();

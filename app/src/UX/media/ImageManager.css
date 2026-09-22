@@ -11,6 +11,17 @@
   background-size: contain;
 }
 
+/* Edit-mode fallback shown while the file has no binary content yet. Hosts
+   the Preview toggle since there is no editor toolbar to put it in. */
+.ifm-noContent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+}
+
+/* Edit toggle floating over the image preview. Only rendered in preview
+   mode; in edit mode the toggle lives in the ImageEditor toolbar. */
 .ifm-float {
   position: absolute;
   margin-top: 3px;

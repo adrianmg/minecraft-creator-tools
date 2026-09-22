@@ -26,15 +26,19 @@ import FogResourceDefinition from "../minecraft/FogResourceDefinition";
 import WorldTemplateManifestDefinition from "../minecraft/WorldTemplateManifestDefinition";
 import ProjectItemUtilities from "../app/ProjectItemUtilities";
 import { isMinorVersionTooOld } from "../core/versioning/MinecraftVersionRules";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../info/tests/ValidationRuleDefinition";
+import { FormatVersionValidationRules } from "./FormatVersionManagerData";
 
 /**
  * Validates and updates format versions across various Minecraft definition types.
  *
  * @see {@link ../../../public/data/forms/mctoolsval/formatver.form.json} for topic definitions
  */
-export default class FormatVersionManager implements IProjectInfoGenerator, IProjectUpdater {
+export default class FormatVersionManager implements IProjectInfoGenerator, IProjectUpdater, IValidationRuleProvider {
   id = "FORMATVER";
   title = "Format Version";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = FormatVersionValidationRules;
 
   performPlatformVersionValidations: boolean = false;
 

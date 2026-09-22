@@ -8,6 +8,7 @@ import Project, { ProjectAutoDeploymentMode } from "../app/Project";
 import ProjectItem from "../app/ProjectItem";
 import { ProjectItemType } from "../app/IProjectItemData";
 import ProjectInfoSet from "../info/ProjectInfoSet";
+import ProjectInfoItem from "../info/ProjectInfoItem";
 import { ProjectInfoSuite } from "../info/IProjectInfoData";
 import { InfoItemType } from "../info/IInfoItemData";
 import CustomDimensionWorldDataInfoGenerator, {
@@ -68,8 +69,7 @@ describe("CustomDimensionWorldDataInfoGenerator", () => {
     });
 
     // getTopicData() provides human-readable title and description for each rule.
-    // All three rules (101=nameIdMappingTableMissing, 102=vanillaDimensionChunkData,
-    // 103=unclaimedDimensionMappings) must have topic data defined.
+    // All validation and metadata topics must have human-readable topic data.
     it("should return topic data for all defined tests", () => {
       const gen = new CustomDimensionWorldDataInfoGenerator();
 
@@ -84,6 +84,14 @@ describe("CustomDimensionWorldDataInfoGenerator", () => {
       const topic103 = gen.getTopicData(CustomDimensionWorldDataTest.unclaimedDimensionMappings);
       assert(topic103 !== undefined, "Should have topic data for test 103");
       expect(topic103!.title).to.be.a("string");
+
+      const topic104 = gen.getTopicData(CustomDimensionWorldDataTest.customDimensionCount);
+      assert(topic104 !== undefined, "Should have topic data for test 104");
+      expect(topic104!.title).to.be.a("string");
+
+      const topic105 = gen.getTopicData(CustomDimensionWorldDataTest.customDimensionChunkCount);
+      assert(topic105 !== undefined, "Should have topic data for test 105");
+      expect(topic105!.title).to.be.a("string");
     });
 
     // Unknown topic IDs should return undefined, not throw.
@@ -106,6 +114,14 @@ describe("CustomDimensionWorldDataInfoGenerator", () => {
 
     it("should define unclaimedDimensionMappings as 103", () => {
       expect(CustomDimensionWorldDataTest.unclaimedDimensionMappings).to.equal(103);
+    });
+
+    it("should define customDimensionCount as 104", () => {
+      expect(CustomDimensionWorldDataTest.customDimensionCount).to.equal(104);
+    });
+
+    it("should define customDimensionChunkCount as 105", () => {
+      expect(CustomDimensionWorldDataTest.customDimensionChunkCount).to.equal(105);
     });
   });
 
@@ -153,8 +169,42 @@ describe("CustomDimensionWorldDataInfoGenerator", () => {
       gen.summarize(info, pis);
 
       expect(info.customDimensionErrors).to.be.undefined;
+      expect(info.customDimensionCount).to.be.undefined;
+      expect(info.customDimensionChunkCount).to.be.undefined;
       expect(info.nameIdTableMissing).to.be.undefined;
       expect(info.unclaimedMappings).to.be.undefined;
+    });
+
+    it("adds custom dimension metadata and capability", () => {
+      const gen = new CustomDimensionWorldDataInfoGenerator();
+      const info: any = { capabilities: [] };
+      const project = new Project(creatorTools!, "test", null);
+      const pis = new ProjectInfoSet(project, ProjectInfoSuite.defaultInDevelopment);
+
+      pis.items.push(
+        new ProjectInfoItem(
+          InfoItemType.info,
+          gen.id,
+          CustomDimensionWorldDataTest.customDimensionCount,
+          undefined,
+          undefined,
+          2
+        ),
+        new ProjectInfoItem(
+          InfoItemType.info,
+          gen.id,
+          CustomDimensionWorldDataTest.customDimensionChunkCount,
+          undefined,
+          undefined,
+          37
+        )
+      );
+
+      gen.summarize(info, pis);
+
+      expect(info.customDimensionCount).to.equal(2);
+      expect(info.customDimensionChunkCount).to.equal(37);
+      expect(info.capabilities).to.deep.equal(["customDimensions"]);
     });
   });
 
@@ -186,6 +236,11 @@ describe("MCWorld Custom Dimension Tracking Properties", () => {
     const ids = mcworld.dimensionIdsInChunks;
     expect(ids).to.be.instanceOf(Set);
     expect(ids.size).to.equal(0);
+  });
+
+  it("should expose customDimensionChunkCount as zero by default", () => {
+    const mcworld = new MCWorld();
+    expect(mcworld.customDimensionChunkCount).to.equal(0);
   });
 
   // Default false — only set to true when a "DimensionNameIdTable" key is found in LevelDB.

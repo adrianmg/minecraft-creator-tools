@@ -127,14 +127,12 @@ export class EditCommand extends CommandBase implements ICommand {
       log.info("Browser auto-open disabled (MCT_NO_OPEN_BROWSER is set)");
     }
 
-    // Keep the process alive until terminated by signal
+    // Keep the process alive until the web server is closed or the process is terminated.
     await new Promise<void>((resolve) => {
-      process.on("SIGINT", () => {
-        resolve();
-      });
-      process.on("SIGTERM", () => {
-        resolve();
-      });
+      const finish = () => resolve();
+      sm.onShutdown.subscribe(finish);
+      process.once("SIGINT", finish);
+      process.once("SIGTERM", finish);
     });
 
     return;

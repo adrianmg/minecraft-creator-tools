@@ -116,8 +116,7 @@ async function setMonacoContent(page: Page, content: string, uriPattern?: string
       for (const editor of editors) {
         if (!matchesNeedle(editor)) continue;
         const readOnlyId = monaco.editor?.EditorOption?.readOnly;
-        const isReadOnly =
-          typeof readOnlyId === "number" ? editor.getOption?.(readOnlyId) : false;
+        const isReadOnly = typeof readOnlyId === "number" ? editor.getOption?.(readOnlyId) : false;
         if (isReadOnly) continue;
         target = editor;
         break;
@@ -286,15 +285,12 @@ async function openDirtyFileInSidebar(page: Page): Promise<boolean> {
  */
 async function reloadAndReopen(page: Page, projectUrl: string): Promise<boolean> {
   await page.goto(projectUrl, { waitUntil: "load" });
-  await page.waitForTimeout(3500);
-  await page.waitForLoadState("networkidle").catch(() => {});
   const ready = await waitForEditorReady(page, 25000);
   if (!ready) {
     return false;
   }
   // After reload the FRE may show again — keep our editing mode preference.
   await selectEditMode(page, "focused").catch(() => {});
-  await page.waitForTimeout(500);
   return true;
 }
 
@@ -309,11 +305,7 @@ async function reloadAndReopen(page: Page, projectUrl: string): Promise<boolean>
  * This is the most authoritative signal we can get from outside the page:
  * if the marker is in IndexedDB, a reload WILL see it.
  */
-async function markerIsInIndexedDB(
-  page: Page,
-  marker: string,
-  keyPattern: RegExp = /manifest/i
-): Promise<boolean> {
+async function markerIsInIndexedDB(page: Page, marker: string, keyPattern: RegExp = /manifest/i): Promise<boolean> {
   return await page.evaluate(
     async ({ m, patternSource, patternFlags }) => {
       const re = new RegExp(patternSource, patternFlags);
@@ -380,14 +372,14 @@ async function markerIsInIndexedDB(
  */
 async function createStarterProject(page: Page, title?: string): Promise<boolean> {
   await page.goto("/", { waitUntil: "load" });
-  await page.waitForTimeout(800);
+  await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
 
   const clicked = await clickTemplateCreateButton(page, "addonStarter");
   if (!clicked) {
     console.log("createStarterProject: Could not click addonStarter Create New");
     return false;
   }
-  await page.waitForTimeout(800);
+  await expect(page.locator(".MuiDialog-root, dialog, [role='dialog']").first()).toBeVisible({ timeout: 5000 });
 
   await preferBrowserStorageInProjectDialog(page);
   await fillRequiredProjectDialogFields(page);
@@ -397,7 +389,7 @@ async function createStarterProject(page: Page, title?: string): Promise<boolean
     const titleInput = page.locator('input[name="title"]').first();
     if (await titleInput.isVisible({ timeout: 1500 }).catch(() => false)) {
       await titleInput.fill(title);
-      await page.waitForTimeout(200);
+      await expect(titleInput).toHaveValue(title);
       console.log(`createStarterProject: Set title = "${title}"`);
     }
   }
@@ -408,14 +400,12 @@ async function createStarterProject(page: Page, title?: string): Promise<boolean
   } else {
     await page.keyboard.press("Enter");
   }
-  await page.waitForTimeout(2500);
 
-  const ready = await waitForEditorReady(page, 25000);
+  const ready = await waitForEditorReady(page, 60000);
   if (!ready) return false;
 
   // Default to focused mode for these tests; raw-mode variants opt in.
   await selectEditMode(page, "focused").catch(() => {});
-  await page.waitForTimeout(500);
   return true;
 }
 
@@ -492,10 +482,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
     }
 
     const marker = `__DLS_RELOAD_${Date.now()}`;
-    const modified = originalContent.replace(
-      /"description"\s*:\s*"([^"]*)"/,
-      `"description": "$1 ${marker}"`
-    );
+    const modified = originalContent.replace(/"description"\s*:\s*"([^"]*)"/, `"description": "$1 ${marker}"`);
     if (modified === originalContent) {
       test.skip();
       return;
@@ -509,9 +496,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
     // Verify the marker is in the manifest model immediately after editing
     // (before save). If this fails, the edit pathway is broken — not save.
     const postEdit = await getAllMonacoContentMatching(page, "manifest");
-    expect(postEdit, "Marker should be present in the manifest model immediately after edit").toContain(
-      marker
-    );
+    expect(postEdit, "Marker should be present in the manifest model immediately after edit").toContain(marker);
 
     // Focus Monaco and Ctrl+S to flush to storage.
     const viewLines = page.locator(".monaco-editor .view-lines").first();
@@ -525,10 +510,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
     // test failure unambiguously points at the reload pathway and not the
     // edit pathway.
     const preReload = await getAllMonacoContentMatching(page, "manifest");
-    expect(
-      preReload,
-      "Sanity: marker should be present in some manifest model before reload"
-    ).toContain(marker);
+    expect(preReload, "Sanity: marker should be present in some manifest model before reload").toContain(marker);
 
     const projectUrl = page.url();
     console.log(`Reloading project from: ${projectUrl}`);
@@ -603,10 +585,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
     const markerB = `__DLS_BATCH_B_${Date.now()}`;
     const markerC = `__DLS_BATCH_C_${Date.now()}`;
 
-    let modified = original.replace(
-      /"description"\s*:\s*"([^"]*)"/,
-      `"description": "$1 ${markerA}"`
-    );
+    let modified = original.replace(/"description"\s*:\s*"([^"]*)"/, `"description": "$1 ${markerA}"`);
     modified = modified.replace(/^{\s*/, `{\n  "x_dls_marker": "${markerB}",\n  `);
 
     // Append a top-level field at the end of the object (before the final brace).
@@ -618,7 +597,11 @@ test.describe("Data-Loss Survival Tests @full", () => {
     }
 
     await setMonacoContent(page, modified);
-    await page.locator(".monaco-editor .view-lines").first().click().catch(() => {});
+    await page
+      .locator(".monaco-editor .view-lines")
+      .first()
+      .click()
+      .catch(() => {});
     await saveProject(page);
 
     await takeScreenshot(page, "debugoutput/screenshots/dataloss-multi-01-edited");
@@ -742,7 +725,11 @@ test.describe("Data-Loss Survival Tests @full", () => {
       if (!reopenedDirty) {
         await openFileInMonaco(page, "manifest");
       }
-      switched = await page.locator(".monaco-editor").first().isVisible({ timeout: 5000 }).catch(() => false);
+      switched = await page
+        .locator(".monaco-editor")
+        .first()
+        .isVisible({ timeout: 5000 })
+        .catch(() => false);
     }
     if (!switched) {
       console.log("Could not get a Monaco view of manifest — skipping");
@@ -761,10 +748,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
     const rawContent = await getAllMonacoContentMatching(page, "manifest");
     await takeScreenshot(page, "debugoutput/screenshots/dataloss-formraw-02-raw-view");
 
-    expect(
-      rawContent,
-      "Form edit must be visible in raw JSON view of the same file"
-    ).toContain(marker);
+    expect(rawContent, "Form edit must be visible in raw JSON view of the same file").toContain(marker);
   });
 
   // -----------------------------------------------------------------------
@@ -800,17 +784,18 @@ test.describe("Data-Loss Survival Tests @full", () => {
     }
 
     const marker = `__DLS_MODESWITCH_${Date.now()}`;
-    const modified = original.replace(
-      /"description"\s*:\s*"([^"]*)"/,
-      `"description": "$1 ${marker}"`
-    );
+    const modified = original.replace(/"description"\s*:\s*"([^"]*)"/, `"description": "$1 ${marker}"`);
     if (modified === original) {
       test.skip();
       return;
     }
 
     await setMonacoContent(page, modified);
-    await page.locator(".monaco-editor .view-lines").first().click().catch(() => {});
+    await page
+      .locator(".monaco-editor .view-lines")
+      .first()
+      .click()
+      .catch(() => {});
 
     // Do NOT save yet — we want to verify the dirty content survives a mode
     // switch even before the underlying storage write.
@@ -843,10 +828,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
     const after = await getAllMonacoContentMatching(page, "manifest");
     await takeScreenshot(page, "debugoutput/screenshots/dataloss-modeswitch-02-after");
 
-    expect(
-      after,
-      "Marker written before the mode switch must survive the focused → raw round-trip"
-    ).toContain(marker);
+    expect(after, "Marker written before the mode switch must survive the focused → raw round-trip").toContain(marker);
   });
 
   // -----------------------------------------------------------------------
@@ -897,10 +879,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
     }
 
     const markerA = `__DLS_PROJA_${Date.now()}`;
-    const modifiedA = originalA.replace(
-      /"description"\s*:\s*"([^"]*)"/,
-      `"description": "$1 ${markerA}"`
-    );
+    const modifiedA = originalA.replace(/"description"\s*:\s*"([^"]*)"/, `"description": "$1 ${markerA}"`);
     if (modifiedA === originalA) {
       test.skip();
       return;
@@ -915,9 +894,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
     // Sanity check: confirm the marker reached at least one manifest model
     // before we save. If this fails, the edit pathway is broken — not save.
     const postEditA = await getAllMonacoContentMatching(page, "manifest");
-    expect(postEditA, "Project A marker should be in manifest model immediately after edit").toContain(
-      markerA
-    );
+    expect(postEditA, "Project A marker should be in manifest model immediately after edit").toContain(markerA);
 
     // Robust check: also wait for the sidebar dirty marker (`*`) to appear on
     // manifest. The asterisk only appears once `file.setContent` has been
@@ -932,14 +909,17 @@ test.describe("Data-Loss Survival Tests @full", () => {
           return items.some((t) => t.trim() === "manifest*");
         },
         {
-          message:
-            "Sidebar should show dirty marker (*) on manifest — confirms the edit reached file.setContent",
+          message: "Sidebar should show dirty marker (*) on manifest — confirms the edit reached file.setContent",
           timeout: 10000,
         }
       )
       .toBe(true);
 
-    await page.locator(".monaco-editor .view-lines").first().click().catch(() => {});
+    await page
+      .locator(".monaco-editor .view-lines")
+      .first()
+      .click()
+      .catch(() => {});
     // Click the Save toolbar button rather than relying on Ctrl+S. Some
     // Monaco mounting paths capture the Ctrl+S keystroke before our window
     // keydown listener (which calls save()) gets a chance to fire. Clicking
@@ -1009,10 +989,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
       ).not.toContain(markerA);
 
       const markerB = `__DLS_PROJB_${Date.now()}`;
-      const modifiedB = originalB.replace(
-        /"description"\s*:\s*"([^"]*)"/,
-        `"description": "$1 ${markerB}"`
-      );
+      const modifiedB = originalB.replace(/"description"\s*:\s*"([^"]*)"/, `"description": "$1 ${markerB}"`);
       if (modifiedB !== originalB) {
         await setMonacoContent(page, modifiedB, "manifest");
         await page.waitForTimeout(500);
@@ -1029,7 +1006,11 @@ test.describe("Data-Loss Survival Tests @full", () => {
           .catch(() => {
             console.log("Project B: manifest dirty marker did not appear; proceeding anyway");
           });
-        await page.locator(".monaco-editor .view-lines").first().click().catch(() => {});
+        await page
+          .locator(".monaco-editor .view-lines")
+          .first()
+          .click()
+          .catch(() => {});
         const saveButtonB = page.getByRole("button", { name: /^Save( \(.+\))?$/i }).first();
         if (await saveButtonB.isVisible({ timeout: 2000 }).catch(() => false)) {
           await saveButtonB.click();
@@ -1040,8 +1021,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
         // back to Project A — same rationale as for Project A above.
         await expect
           .poll(async () => await markerIsInIndexedDB(page, markerB), {
-            message:
-              "Project B's marker should be flushed to IndexedDB after save",
+            message: "Project B's marker should be flushed to IndexedDB after save",
             timeout: 30000,
             intervals: [500, 1000, 1500, 2000],
           })
@@ -1084,10 +1064,7 @@ test.describe("Data-Loss Survival Tests @full", () => {
     const afterA = await getAllMonacoContentMatching(page, "manifest");
     await takeScreenshot(page, "debugoutput/screenshots/dataloss-twoproj-03-A-returned");
 
-    expect(
-      afterA,
-      "Project A's marker must still be present after editing Project B and returning"
-    ).toContain(markerA);
+    expect(afterA, "Project A's marker must still be present after editing Project B and returning").toContain(markerA);
   });
 
   // -----------------------------------------------------------------------
@@ -1154,10 +1131,9 @@ test.describe("Data-Loss Survival Tests @full", () => {
 
     for (const uri of initialUris) {
       if (afterSnapshot[uri] !== undefined) {
-        expect(
-          afterSnapshot[uri],
-          `Passive open → navigate away → return must not mutate ${uri}`
-        ).toBe(initialSnapshot[uri]);
+        expect(afterSnapshot[uri], `Passive open → navigate away → return must not mutate ${uri}`).toBe(
+          initialSnapshot[uri]
+        );
       }
     }
 

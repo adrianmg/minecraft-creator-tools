@@ -5,6 +5,8 @@ import { assert } from "chai";
 import CommunitySchemaItemInfoGenerator, {
   CommunitySchemaItemInfoGeneratorTest,
 } from "./CommunitySchemaItemInfoGenerator";
+import { CommunitySchemaItemTypes } from "./CommunitySchemaItemInfoData";
+import ProjectItemUtilities from "../../../app/ProjectItemUtilities";
 import { createStubProjectItem } from "../../../test/stubs/app/projects/StubProjectItem";
 import { createStubFile } from "../../../test/stubs/app/io/StubFile";
 import { ProjectItemType } from "../../../app/IProjectItemData";
@@ -93,5 +95,21 @@ describe("CommunitySchemaItemInfoGenerator", () => {
     assert.lengthOf(results, 1);
     assert.strictEqual(results[0].itemType, InfoItemType.error);
     assert.strictEqual(results[0].generatorIndex, CommunitySchemaItemInfoGeneratorTest.couldNotParseJson);
+  });
+
+  // The rule inventory is a leaf data module that cannot import
+  // ProjectItemUtilities, so it enumerates community-schema item types as a
+  // literal list; this test keeps that list from drifting apart from the
+  // production mapping in either direction.
+  it("inventories exactly the item types with a community schema", () => {
+    const expected = Object.values(ProjectItemType)
+      .filter((value): value is ProjectItemType => typeof value === "number")
+      .filter((itemType) => ProjectItemUtilities.getCommunitySchemaPathForType(itemType) !== undefined)
+      .sort((a, b) => a - b);
+
+    assert.deepEqual(
+      [...CommunitySchemaItemTypes].sort((a, b) => a - b).map((t) => ProjectItemType[t]),
+      expected.map((t) => ProjectItemType[t])
+    );
   });
 });

@@ -7,7 +7,11 @@ import ProjectInfoItem from "../../ProjectInfoItem";
 import { InfoItemType } from "../../IInfoItemData";
 import { ProjectItemType } from "../../../app/IProjectItemData";
 import ProjectItem from "../../../app/ProjectItem";
-import { CheckParticleIdentifierTest as CheckParticleIdentifier } from "./CheckParticleIdentifierData";
+import {
+  CheckParticleIdentifierTest as CheckParticleIdentifier,
+  ParticleIdentifierValidationRules,
+} from "./CheckParticleIdentifierData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 /* Older versions do not require a check */
 const MinVersionForCheck = new SemanticVersion(1, 20, 60);
@@ -21,10 +25,12 @@ const NamespaceRegexPattern = /^\w{2,}:\w+/;
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/cparti.form.json} for topic definitions
  */
-export default class CheckParticleIdentifierGenerator implements IProjectInfoGenerator {
+export default class CheckParticleIdentifierGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id: string = "CPARTI";
   title: string = "Particle Identifiers";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = ParticleIdentifierValidationRules;
 
   private severity = InfoItemType.error;
 

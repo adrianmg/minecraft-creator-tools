@@ -23,6 +23,7 @@ import {
   fillRequiredProjectDialogFields,
   clickTemplateCreateButton,
   waitForEditorReady,
+  waitForInspectorValidationComplete,
 } from "./WebTestUtilities";
 
 test.describe("Project Template Selection @full", () => {
@@ -433,14 +434,13 @@ test.describe("Project Inspector and Validation @full", () => {
   test("should open Inspector from project item list", async ({ page }) => {
     const entered = await enterEditor(page, { editMode: "full" });
     expect(entered).toBe(true);
-    await page.waitForTimeout(2000);
 
     // Look for Inspector in the project tree
     const inspector = page.locator("text=Inspector").first();
 
     if (await inspector.isVisible({ timeout: 5000 })) {
       await inspector.click();
-      await page.waitForTimeout(3000); // Inspector takes time to run validation
+      await waitForInspectorValidationComplete(page);
 
       await takeScreenshot(page, "debugoutput/screenshots/workflow-inspector");
 

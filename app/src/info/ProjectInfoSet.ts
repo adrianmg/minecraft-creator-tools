@@ -644,26 +644,39 @@ export default class ProjectInfoSet {
   matchesSuite(
     generator: IProjectFileInfoGenerator | IProjectInfoGenerator | IProjectItemInfoGenerator | IProjectInfoGeneratorBase
   ) {
-    if (
-      this.suite === ProjectInfoSuite.defaultInDevelopment &&
-      !TestsToExcludeFromDefaultSuite.includes(generator.id)
-    ) {
+    return ProjectInfoSet.generatorMatchesSuite(generator, this.suite);
+  }
+
+  /**
+   * Whether a generator participates in a suite. Static so tooling (e.g. the
+   * validation rule catalog) can derive suite membership from the same logic
+   * production uses instead of maintaining a copy that could drift.
+   */
+  static generatorMatchesSuite(
+    generator:
+      | IProjectFileInfoGenerator
+      | IProjectInfoGenerator
+      | IProjectItemInfoGenerator
+      | IProjectInfoGeneratorBase,
+    suite: ProjectInfoSuite
+  ) {
+    if (suite === ProjectInfoSuite.defaultInDevelopment && !TestsToExcludeFromDefaultSuite.includes(generator.id)) {
       return true;
     }
 
-    if (this.suite === ProjectInfoSuite.sharing || this.suite === ProjectInfoSuite.sharingStrict) {
+    if (suite === ProjectInfoSuite.sharing || suite === ProjectInfoSuite.sharingStrict) {
       if (generator.id === "SHARING") {
         return true;
       }
     }
 
-    if (this.suite === ProjectInfoSuite.sharingStrict) {
+    if (suite === ProjectInfoSuite.sharingStrict) {
       if (generator.id === "LANGFILES" || generator.id === "VANDUPES") {
         return true;
       }
     }
 
-    if (this.suite === ProjectInfoSuite.currentPlatformVersions) {
+    if (suite === ProjectInfoSuite.currentPlatformVersions) {
       if (
         generator.id === "MINENGINEVER" ||
         generator.id === "BASEGAMEVER" ||
@@ -675,7 +688,7 @@ export default class ProjectInfoSet {
       }
     }
 
-    if (this.suite === ProjectInfoSuite.cooperativeAddOn) {
+    if (suite === ProjectInfoSuite.cooperativeAddOn) {
       if (
         generator.id.indexOf("CADDON") >= 0 ||
         generator.id === "PACKSIZE" ||
@@ -1708,70 +1721,97 @@ function _addReportJson(data) {
       return genI.defaultMessage;
     }	    
     
+    // The report is built with DOM APIs rather than document.write:
+    // document.write evaluates its argument as HTML, so report-supplied
+    // strings (messages, paths, data) would be interpreted as markup.
+    // textContent renders them verbatim.
+    function appendElement(parent, tag, text, className) {
+      const el = document.createElement(tag);
+
+      if (className) {
+        el.className = className;
+      }
+
+      el.textContent = text;
+      parent.appendChild(el);
+      return el;
+    }
+
+    function appendSummaryRow(table, keyText, valueText) {
+      const row = document.createElement("tr");
+      appendElement(row, "td", keyText, "summary-key items-cell");
+      appendElement(row, "td", valueText, "summary-value items-cell");
+      table.appendChild(row);
+    }
+
     function generateReports() {
       for (let i=0; i<_reportObjects.length; i++) {
-        document.write("<h1>" + _reportObjects[i].sourceName + "</h1>");
-        document.write("<h3>Summary</h3>");
-    
-        document.write("<table class='summary-table'>");
-        document.write("<tr><th>Measure</th><th>Value</th></tr>");
+        appendElement(document.body, "h1", _reportObjects[i].sourceName);
+        appendElement(document.body, "h3", "Summary");
+
+        const table = document.createElement("table");
+        table.className = "summary-table";
+
+        const headerRow = document.createElement("tr");
+        appendElement(headerRow, "th", "Measure");
+        appendElement(headerRow, "th", "Value");
+        table.appendChild(headerRow);
+
         const info = _reportObjects[i].info;
-    
+
         if (info) {
           for (const key in info) {
             const val = info[key];
-    
+
             if (key !== 'featureSets' && key !== 'defaultIcon' && key !== 'summary') {
-              document.write("<tr>");
-              document.write("<td class='summary-key items-cell'>" + getDataName(key) + "</td>");
-              document.write("<td class='summary-value items-cell'>" + getDataSummary(val) + "</td>");
-              document.write("</tr>");
+              appendSummaryRow(table, getDataName(key), getDataSummary(val));
             }
           }
-    
+
           if (info["featureSets"]) {
             for (const featureName in info.featureSets) {
               const feature = info.featureSets[featureName];
-    
-              for (const measureName in feature) {
-                const val = feature[measureName];
 
-                 document.write("<tr>");
-                document.write("<td class='summary-key items-cell'>" + featureName + " " + measureName + "</td>");
-                document.write("<td class='summary-value items-cell'>" + getDataSummary(val) + "</td>");
-                document.write("</tr>");
+              for (const measureName in feature) {
+                appendSummaryRow(table, featureName + " " + measureName, getDataSummary(feature[measureName]));
               }
             }
           }
         }
-        document.write("</table>");
+        document.body.appendChild(table);
       }
-    
+
       for (let i=0; i<_reportObjects.length; i++) {
-        document.write("<h3>Items</h3>");
-        document.write("<table class='items-table'>");
-        document.write("<tr><th>Type</th><th>Test Category</th><th>Category Id</th><th>Message</th><th>Data</th><th>Path</th></tr>");
-        const info = _reportObjects[i].info;
-        
+        appendElement(document.body, "h3", "Items");
+
+        const table = document.createElement("table");
+        table.className = "items-table";
+
+        const headerRow = document.createElement("tr");
+        for (const title of ["Type", "Test Category", "Category Id", "Message", "Data", "Path"]) {
+          appendElement(headerRow, "th", title);
+        }
+        table.appendChild(headerRow);
+
         const items = _reportObjects[i].items;
-    
+
         if (items && items.length) {
           for (const item of items) {
             if (item.itemType !== 2) {
-              document.write("<tr>");
-              document.write("<td class='items-type items-cell'>" + getDescriptionForItemType(item.iTp) + "</td>");
-              document.write("<td class='items-generator items-cell'>" + item.gId + "</td>");
-              document.write("<td class='items-generatorIndex items-cell'>" + item.gIx + "</td>");
-              document.write("<td class='items-message items-cell'>" + getEmptySummary(getEffectiveMessage(_reportObjects[i], item)) + "</td>");
-              document.write("<td class='items-data items-cell'>" + getEmptySummary(item.d) + "</td>");
-              document.write("<td class='items-path items-cell'>" + getEmptySummary(item.p) + "</td>");
-              document.write("</tr>");
+              const row = document.createElement("tr");
+              appendElement(row, "td", getDescriptionForItemType(item.iTp), "items-type items-cell");
+              appendElement(row, "td", item.gId, "items-generator items-cell");
+              appendElement(row, "td", item.gIx, "items-generatorIndex items-cell");
+              appendElement(row, "td", getEmptySummary(getEffectiveMessage(_reportObjects[i], item)), "items-message items-cell");
+              appendElement(row, "td", getEmptySummary(item.d), "items-data items-cell");
+              appendElement(row, "td", getEmptySummary(item.p), "items-path items-cell");
+              table.appendChild(row);
             }
           }
         }
-        document.write("</table>");
+        document.body.appendChild(table);
       }
-    } 
+    }
 
     function getDescriptionForItemType(itemType) {
       switch (itemType) {

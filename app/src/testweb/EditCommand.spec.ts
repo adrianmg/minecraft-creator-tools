@@ -51,7 +51,10 @@ function isIgnorableEditError(message: string): boolean {
     return true;
   }
   // WebSocket disconnection errors during server shutdown
-  if (message.includes("WebSocket") && (message.includes("failed") || message.includes("closed") || message.includes("error"))) {
+  if (
+    message.includes("WebSocket") &&
+    (message.includes("failed") || message.includes("closed") || message.includes("error"))
+  ) {
     return true;
   }
   // Telemetry errors are non-critical (e.g., no Application Insights in test env)
@@ -273,6 +276,14 @@ async function waitForServerExit(serverInfo: EditServerInfo): Promise<boolean> {
   });
 }
 
+async function saveEditScreenshot(page: Page, name: string): Promise<void> {
+  if (process.env.MCT_EDIT_SCREENSHOTS !== "1") {
+    return;
+  }
+
+  await page.screenshot({ path: `debugoutput/screenshots/edit-${name}.png`, fullPage: true });
+}
+
 test.describe("MCTools Edit Command Tests", () => {
   const consoleErrors: { url: string; error: string }[] = [];
   const consoleWarnings: { url: string; error: string }[] = [];
@@ -296,26 +307,23 @@ test.describe("MCTools Edit Command Tests", () => {
 
       // Navigate to the edit URL
       console.log(`Navigating to: ${serverInfo.url}`);
-      await page.goto(serverInfo.url);
-      await page.waitForLoadState("networkidle");
-      await page.waitForTimeout(2000); // Give extra time for project to load
-
-      // Take initial screenshot
-      await page.screenshot({ path: "debugoutput/screenshots/edit-simple-initial.png", fullPage: true });
+      await page.goto(serverInfo.url, { waitUntil: "domcontentloaded" });
 
       // Verify we're in the editor interface
       // In edit mode, there should be a Close button (same as view mode)
       const closeButton = page.locator('button[title*="Close"]').or(page.locator("button:has-text('Close')"));
 
-      // Wait for the UI to stabilize
-      await page.waitForTimeout(1000);
-
       // Check if Close button exists (indicates edit/view mode)
-      const hasCloseButton = (await closeButton.count()) > 0;
+      const hasCloseButton = await expect(closeButton.first())
+        .toBeVisible({ timeout: 30000 })
+        .then(
+          () => true,
+          () => false
+        );
       console.log(`Close button found: ${hasCloseButton}`);
 
       if (hasCloseButton) {
-        await expect(closeButton.first()).toBeVisible();
+        await saveEditScreenshot(page, "simple-initial");
       }
 
       // Now click the Close button to shut down the server
@@ -328,8 +336,7 @@ test.describe("MCTools Edit Command Tests", () => {
         console.log(`Server exited cleanly: ${exitedCleanly}`);
 
         // Take final screenshot (might show session ended screen)
-        await page.waitForTimeout(500);
-        await page.screenshot({ path: "debugoutput/screenshots/edit-simple-after-close.png", fullPage: true });
+        await saveEditScreenshot(page, "simple-after-close");
       }
 
       // Log captured errors for CI debugging visibility
@@ -369,14 +376,7 @@ test.describe("MCTools Edit Command Tests", () => {
 
       // Navigate to the edit URL to authenticate
       console.log(`Navigating to: ${serverInfo.url}`);
-      await page.goto(serverInfo.url);
-      await page.waitForLoadState("networkidle");
-
-      // Take screenshot to see what the page looks like after initial load
-      await page.screenshot({ path: "debugoutput/screenshots/edit-api-test-initial.png", fullPage: true });
-
-      // Wait for the app to initialize (authentication and project loading)
-      await page.waitForTimeout(3000);
+      await page.goto(serverInfo.url, { waitUntil: "domcontentloaded" });
 
       // Wait for the Close button to appear, which indicates auth and project loading completed
       const closeButton = page
@@ -384,6 +384,7 @@ test.describe("MCTools Edit Command Tests", () => {
         .or(page.locator('button[title*="Close"]'));
 
       await expect(closeButton.first()).toBeVisible({ timeout: 15000 });
+      await saveEditScreenshot(page, "api-test-initial");
 
       // Test PUT request to create/update a file via the API
       // Use page.evaluate to make the request from the browser context (which has the auth cookie)
@@ -440,7 +441,7 @@ test.describe("MCTools Edit Command Tests", () => {
       expect(fs.existsSync(createdFilePath)).toBe(false);
 
       // Take final screenshot
-      await page.screenshot({ path: "debugoutput/screenshots/edit-api-test-complete.png", fullPage: true });
+      await saveEditScreenshot(page, "api-test-complete");
     } finally {
       // Ensure server is stopped
       if (serverInfo) {

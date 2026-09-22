@@ -7,6 +7,7 @@
       "mode": "listen",
       "name": "Debug with Minecraft",
       "preLaunchTask": "build",
+      "request": "attach",
       "sourceMapRoot": "${workspaceFolder}/dist/debug/",
       "generatedSourceRoot": "${workspaceFolder}/dist/scripts/"
     }

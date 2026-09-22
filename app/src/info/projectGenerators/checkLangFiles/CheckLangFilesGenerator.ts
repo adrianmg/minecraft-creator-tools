@@ -6,7 +6,8 @@ import StorageUtilities from "../../../storage/StorageUtilities";
 import { resultFromTest } from "../../tests/TestDefinition";
 import { parseLocalizationCatalogFromItem } from "../../../app/localization/LocalizationCatalog";
 import Pack from "../../../minecraft/Pack";
-import { CheckLangFilesTests as Tests } from "./CheckLangFilesData";
+import { CheckLangFilesTests as Tests, CheckLangFilesValidationRules } from "./CheckLangFilesData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 /*
   Checks languages.json and the various .lang files in a pack to ensure that they match
@@ -18,10 +19,12 @@ import { CheckLangFilesTests as Tests } from "./CheckLangFilesData";
 
   @see {@link ../../../../public/data/forms/mctoolsval/langfiles.form.json} for topic definitions
 */
-export default class CheckLangFilesGenerator implements IProjectInfoGenerator {
+export default class CheckLangFilesGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id: string = "LANGFILES";
   title: string = "Language Files";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = CheckLangFilesValidationRules;
 
   async generate(project: Project): Promise<ProjectInfoItem[]> {
     const results = await Promise.all(project.packs.map((pack) => this.validatePack(pack)));

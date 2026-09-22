@@ -9,7 +9,8 @@ import StorageUtilities from "../../../storage/StorageUtilities";
 import ProjectInfoSet from "../../ProjectInfoSet";
 import Project from "../../../app/Project";
 import ContentIndex from "../../../core/ContentIndex";
-import { ValidGeneratorTest } from "./ValidFileData";
+import { ValidGeneratorTest, ValidFileValidationRules } from "./ValidFileData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { ValidGeneratorTest };
 
@@ -18,9 +19,11 @@ export { ValidGeneratorTest };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/valfile.form.json} for topic definitions
  */
-export default class ValidFileGenerator implements IProjectFileInfoGenerator {
+export default class ValidFileGenerator implements IProjectFileInfoGenerator, IValidationRuleProvider {
   id = "VALFILE";
   title = "Valid files";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = ValidFileValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {}
 

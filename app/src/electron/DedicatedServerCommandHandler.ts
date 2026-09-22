@@ -13,7 +13,14 @@ import CreatorTools from "../app/CreatorTools";
 import DedicatedServer from "../local/DedicatedServer";
 import ServerMessage, { ServerMessageCategory } from "../local/ServerMessage";
 import ElectronUtils from "./ElectronUtils";
-import { IDebugSessionInfo, IStatData, IProfilerCaptureEvent } from "../debugger/IMinecraftDebugProtocol";
+import Log from "../core/Log";
+import {
+  IDebugSessionInfo,
+  IStatData,
+  IProfilerCaptureEvent,
+  IDiagnosticsTabDescriptor,
+} from "../debugger/IMinecraftDebugProtocol";
+import { IDebuggerStageEventData } from "../debugger/DebuggerLifecycle";
 
 export class DedicatedServerCommandHandler {
   private _dsm: ServerManager;
@@ -43,6 +50,7 @@ export class DedicatedServerCommandHandler {
     this.stopServer = this.stopServer.bind(this);
     this.handleServerOutput = this.handleServerOutput.bind(this);
     this.handleServerStopped = this.handleServerStopped.bind(this);
+    this.handleServerError = this.handleServerError.bind(this);
     this.getDedicatedServerProjectPath = this.getDedicatedServerProjectPath.bind(this);
     this.getDedicatedServerWorldPath = this.getDedicatedServerWorldPath.bind(this);
     this.getDedicatedServerStatus = this.getDedicatedServerStatus.bind(this);
@@ -51,10 +59,20 @@ export class DedicatedServerCommandHandler {
     this.debugResume = this.debugResume.bind(this);
     this.debugStartProfiler = this.debugStartProfiler.bind(this);
     this.debugStopProfiler = this.debugStopProfiler.bind(this);
+    this.debugRetryConnection = this.debugRetryConnection.bind(this);
+    this.getDebugDiagnostics = this.getDebugDiagnostics.bind(this);
+    this.getDebugStatus = this.getDebugStatus.bind(this);
+    this.debugReattach = this.debugReattach.bind(this);
+    this.getDedicatedServerDebugStatus = this.getDedicatedServerDebugStatus.bind(this);
 
     this._dsm = new ServerManager(env, creatorTools as any);
     this._dsm.onServerOutput.subscribe(this.handleServerOutput);
     this._dsm.onServerStopped.subscribe(this.handleServerStopped);
+    // Server errors (startup preflight failures, runtime error lines) bubble
+    // up through the manager - forward them so the renderer actually receives
+    // the detailed dedicatedServerError message that startup failure
+    // completions refer to.
+    this._dsm.onServerError.subscribe(this.handleServerError);
 
     // Subscribe to debug events from the ServerManager and forward them via IPC
     this._dsm.onDebugConnected.subscribe(this._handleDebugConnected.bind(this));
@@ -63,6 +81,8 @@ export class DedicatedServerCommandHandler {
     this._dsm.onDebugPaused.subscribe(this._handleDebugPaused.bind(this));
     this._dsm.onDebugResumed.subscribe(this._handleDebugResumed.bind(this));
     this._dsm.onProfilerCapture.subscribe(this._handleProfilerCapture.bind(this));
+    this._dsm.onDebugStageChanged.subscribe(this._handleDebugStageChanged.bind(this));
+    this._dsm.onDebugSchema.subscribe(this._handleDebugSchema.bind(this));
 
     this._ipcMain.handle("asyncstartDedicatedServer", this.startServer);
     this._ipcMain.handle("asyncstopDedicatedServer", this.stopServer);
@@ -74,6 +94,11 @@ export class DedicatedServerCommandHandler {
     this._ipcMain.handle("asyncdebugResume", this.debugResume);
     this._ipcMain.handle("asyncdebugStartProfiler", this.debugStartProfiler);
     this._ipcMain.handle("asyncdebugStopProfiler", this.debugStopProfiler);
+    this._ipcMain.handle("asyncdebugRetryConnection", this.debugRetryConnection);
+    this._ipcMain.handle("asyncgetDebugDiagnostics", this.getDebugDiagnostics);
+    this._ipcMain.handle("asyncgetDebugStatus", this.getDebugStatus);
+    this._ipcMain.handle("asyncdebugReattach", this.debugReattach);
+    this._ipcMain.handle("asyncgetDedicatedServerDebugStatus", this.getDedicatedServerDebugStatus);
   }
 
   command(_event: Electron.IpcMainInvokeEvent, data: string): void {
@@ -196,23 +221,93 @@ export class DedicatedServerCommandHandler {
     return mess;
   }
 
+  // The in-flight startup, if any. Duplicate Start requests share this
+  // promise: they must not spawn a second provisioning/start flow, but they
+  // must not be answered early either - a success-shaped completion while
+  // the shared start is still provisioning (or about to fail) would let the
+  // caller proceed as though a process exists. Resolves true once BDS
+  // started, false when no server could be created; rejects when the
+  // underlying startup throws.
+  private _startServerPromise: Promise<boolean> | undefined;
+
   async startServer(_event: Electron.IpcMainInvokeEvent, data: string): Promise<void> {
     const slargs = data.split("|");
+    const requestId = slargs[0];
 
-    const serverState = slargs[1];
+    if (!this._startServerPromise) {
+      const serverState = slargs[1];
 
+      this._startServerPromise = this._runStartServer(serverState).finally(() => {
+        this._startServerPromise = undefined;
+      });
+    }
+    // Note: a joining request's serverState is ignored - it attaches to the
+    // start already in progress, exactly as the old debounce did.
+
+    // Every request - initiator and joiners alike - awaits the SAME shared
+    // outcome and MUST be settled on it, success or failure: sendAsync
+    // resolves only on this completion message (an invoke rejection is not
+    // wired to its rejecter), so a request left without a completion hangs
+    // the renderer's start() forever. Failures settle with an "<error>"
+    // payload the renderer-side start() turns into a rejection.
+    let started = false;
+    let errorMessage: string | undefined;
+
+    try {
+      started = await this._startServerPromise;
+    } catch (e) {
+      errorMessage = e instanceof Error ? e.message : String(e);
+    }
+
+    if (started) {
+      this._window.webContents.send("appsvc", "asyncdedicatedServerStartComplete|" + requestId + "|");
+    } else {
+      this._window.webContents.send(
+        "appsvc",
+        "asyncdedicatedServerStartComplete|" + requestId + "|<error>" + (errorMessage ?? "Could not create a server.")
+      );
+    }
+  }
+
+  private async _runStartServer(serverState: string): Promise<boolean> {
     const mess = this.processServerState(serverState);
 
     const srv = await this._dsm.ensureActiveServer(0, mess);
 
     if (!srv) {
       this._window.webContents.send("appsvc", "dedicatedServerError|Could not create a server.");
-      return;
+      return false;
     }
 
-    await srv.startServer(false, mess);
+    // Capture the failure reason directly from this server: startServer()
+    // returns NORMALLY on preflight failures (missing executable, invalid
+    // signature, non-Microsoft signer) after setting status = stopped and
+    // dispatching onServerError with the only actionable description of
+    // what went wrong.
+    let startErrorMessage: string | undefined;
+    const captureStartError = (_server: DedicatedServer, message: string) => {
+      startErrorMessage = message;
+    };
 
-    this._window.webContents.send("appsvc", "asyncdedicatedServerStartComplete|" + slargs[0] + "|");
+    srv.onServerError.subscribe(captureStartError);
+
+    let launched = false;
+
+    try {
+      launched = await srv.startServer(false, mess);
+    } finally {
+      srv.onServerError.unsubscribe(captureStartError);
+    }
+
+    if (!launched) {
+      // A resolved startServer() is NOT a successful startup. Reject the
+      // shared startup with the captured preflight reason so every joined
+      // request settles with an actionable "<error>" completion instead of
+      // proceeding as though a process exists.
+      throw new Error(startErrorMessage ?? "The server failed to launch.");
+    }
+
+    return true;
   }
 
   handleServerOutput(_server: DedicatedServer, message: ServerMessage | null): void {
@@ -236,36 +331,55 @@ export class DedicatedServerCommandHandler {
     this._window.webContents.send("appsvc", "dedicatedServerStopped|");
   }
 
+  handleServerError(_server: DedicatedServer, message: string): void {
+    this._window.webContents.send("appsvc", "dedicatedServerError|" + message);
+  }
+
   // ============================================================================
   // Debug Event Handlers - Forward debug events from ServerManager to renderer
   // ============================================================================
 
-  private _handleDebugConnected(_server: DedicatedServer, sessionInfo: IDebugSessionInfo): void {
+  private _handleDebugConnected(server: DedicatedServer, sessionInfo: IDebugSessionInfo): void {
     const body = {
       eventName: "debugConnected",
       protocolVersion: sessionInfo.protocolVersion,
       sessionId: sessionInfo.targetModuleUuid,
+      targetModuleUuid: sessionInfo.targetModuleUuid,
+      plugins: sessionInfo.plugins,
+      host: sessionInfo.host,
+      port: sessionInfo.port,
+      capabilities: sessionInfo.capabilities,
+      ownership: server.debugOwnership,
     };
     this._window.webContents.send("appsvc", "dedicatedServerDebugConnected|" + JSON.stringify(body));
   }
 
-  private _handleDebugDisconnected(_server: DedicatedServer, reason: string): void {
+  private _handleDebugDisconnected(server: DedicatedServer, reason: string): void {
     const body = {
       eventName: "debugDisconnected",
       reason: reason,
+      ownership: server.debugOwnership,
     };
     this._window.webContents.send("appsvc", "dedicatedServerDebugDisconnected|" + JSON.stringify(body));
   }
 
-  private _handleDebugStats(
-    _server: DedicatedServer,
-    statsData: { tick: number; stats: IStatData[] }
-  ): void {
+  private _handleDebugSchema(_server: DedicatedServer, descriptors: IDiagnosticsTabDescriptor[]): void {
+    const body = {
+      eventName: "debugSchema",
+      descriptors: descriptors,
+    };
+    this._window.webContents.send("appsvc", "dedicatedServerDebugSchema|" + JSON.stringify(body));
+  }
+
+  private _handleDebugStats(_server: DedicatedServer, statsData: { tick: number; stats: IStatData[] }): void {
     // Flatten IStatData to IDebugStatItem format for the renderer
     const items = statsData.stats.map((s) => ({
       name: s.name,
       values: s.values,
       parent: s.parent_name || undefined,
+      fullId: s.full_id || undefined,
+      parentFullId: s.parent_full_id || undefined,
+      childrenStringValues: s.children_string_values.length > 0 ? s.children_string_values : undefined,
     }));
 
     const body = {
@@ -289,6 +403,18 @@ export class DedicatedServerCommandHandler {
       eventName: "debugResumed",
     };
     this._window.webContents.send("appsvc", "dedicatedServerDebugResumed|" + JSON.stringify(body));
+  }
+
+  private _handleDebugStageChanged(_server: DedicatedServer, stageData: IDebuggerStageEventData): void {
+    const body = {
+      eventName: "debugStage",
+      stage: stageData.stage,
+      failureKind: stageData.failureKind,
+      message: stageData.errorMessage,
+      detail: stageData.detail,
+      debugPort: stageData.debugPort,
+    };
+    this._window.webContents.send("appsvc", "dedicatedServerDebugStage|" + JSON.stringify(body));
   }
 
   private _handleProfilerCapture(_server: DedicatedServer, captureEvent: IProfilerCaptureEvent): void {
@@ -330,10 +456,7 @@ export class DedicatedServerCommandHandler {
         ds.debugClient.startProfiler();
         // Send profiler state update
         const body = { eventName: "debugProfilerState", isRunning: true };
-        this._window.webContents.send(
-          "appsvc",
-          "dedicatedServerDebugProfilerState|" + JSON.stringify(body)
-        );
+        this._window.webContents.send("appsvc", "dedicatedServerDebugProfilerState|" + JSON.stringify(body));
       } catch (e) {
         // Profiler not supported
       }
@@ -349,15 +472,121 @@ export class DedicatedServerCommandHandler {
         ds.debugClient.stopProfiler("profiler_captures");
         // Send profiler state update
         const body = { eventName: "debugProfilerState", isRunning: false };
-        this._window.webContents.send(
-          "appsvc",
-          "dedicatedServerDebugProfilerState|" + JSON.stringify(body)
-        );
+        this._window.webContents.send("appsvc", "dedicatedServerDebugProfilerState|" + JSON.stringify(body));
       } catch (e) {
         // Profiler not supported
       }
     }
     this._window.webContents.send("appsvc", "asyncdebugStopProfilerComplete|" + slargs[0] + "|");
+  }
+
+  async debugRetryConnection(_event: Electron.IpcMainInvokeEvent, data: string): Promise<void> {
+    const slargs = data.split("|");
+    const ds = this._dsm.getActiveServer(0);
+
+    // EVERY path must settle the request with this completion message -
+    // sendAsync resolves only from it (an ipcRenderer.invoke rejection is
+    // not wired to its rejecter), so a throwing retry (e.g., the listener
+    // command hitting a broken BDS stdin) would otherwise leave the
+    // renderer's debugRetryConnection() pending forever. Failures settle
+    // with an "<error>" payload the renderer turns into a rejection,
+    // following the startServer contract above.
+    let payload = "0";
+
+    try {
+      if (ds && (await ds.retryDebugConnection())) {
+        payload = "1";
+      }
+    } catch (e) {
+      payload = "<error>" + (e instanceof Error ? e.message : String(e));
+    }
+
+    this._window.webContents.send("appsvc", "asyncdebugRetryConnectionComplete|" + slargs[0] + "|" + payload);
+  }
+
+  async getDebugDiagnostics(_event: Electron.IpcMainInvokeEvent, data: string): Promise<void> {
+    const slargs = data.split("|");
+    const ds = this._dsm.getActiveServer(0);
+
+    const diagnostics = ds ? JSON.stringify(ds.getDebugDiagnostics(), undefined, 2) : "";
+
+    this._window.webContents.send("appsvc", "asyncgetDebugDiagnosticsComplete|" + slargs[0] + "|" + diagnostics);
+  }
+
+  /**
+   * Return the CURRENT debugger lifecycle snapshot (stage, failure kind,
+   * sanitized message, dynamic debug port). Live dedicatedServerDebugStage
+   * events only cover transitions that happen AFTER a renderer subscribes;
+   * a late-mounting panel (the Stats tab is mounted on open) hydrates from
+   * this snapshot so a flow that settled - e.g. terminally failed - before
+   * the mount still surfaces its error and recovery actions.
+   */
+  async getDebugStatus(_event: Electron.IpcMainInvokeEvent, data: string): Promise<void> {
+    const slargs = data.split("|");
+    const ds = this._dsm.getActiveServer(0);
+
+    let payload = "";
+
+    if (ds) {
+      payload = JSON.stringify({
+        eventName: "debugStage",
+        stage: ds.debuggerLifecycle.stage,
+        failureKind: ds.debuggerLifecycle.failureKind,
+        message: ds.debuggerLifecycle.errorMessage,
+        debugPort: ds.debugPort,
+      });
+    }
+
+    this._window.webContents.send("appsvc", "asyncgetDebugStatusComplete|" + slargs[0] + "|" + payload);
+  }
+
+  /**
+   * Retry acquiring the single-client debug endpoint (the diagnostics panel's
+   * "Check again" action). Delegates to DedicatedServer.reattachDebugClient,
+   * which clears the failure latch, discards a stale client, and re-runs the
+   * connect; success is broadcast via the normal debugConnected event. The
+   * outcome is also returned to the caller, and failures additionally push a
+   * debugDisconnected event so the panel leaves its "connecting" state.
+   */
+  async debugReattach(_event: Electron.IpcMainInvokeEvent, data: string): Promise<void> {
+    const slargs = data.split("|");
+    const ds = this._dsm.getActiveServer(0);
+
+    let result: { connected: boolean; ownership: string } = { connected: false, ownership: "unknown" };
+
+    if (ds) {
+      try {
+        result = await ds.reattachDebugClient();
+      } catch (e) {
+        Log.debug("Debug reattach failed: " + e);
+      }
+
+      if (!result.connected) {
+        const body = {
+          eventName: "debugDisconnected",
+          reason: "Reattach attempt did not connect",
+          ownership: result.ownership,
+        };
+        this._window.webContents.send("appsvc", "dedicatedServerDebugDisconnected|" + JSON.stringify(body));
+      }
+    }
+
+    this._window.webContents.send("appsvc", "asyncdebugReattachComplete|" + slargs[0] + "|" + JSON.stringify(result));
+  }
+
+  /**
+   * Return the current debug session snapshot (ISlotConfig JSON) — the same
+   * hydration payload the web /status endpoint serves. Lets a late-mounting
+   * DebugStatsPanel recover session/schema/ownership state when the
+   * debugConnected / debugSchema events fired before it subscribed.
+   */
+  async getDedicatedServerDebugStatus(_event: Electron.IpcMainInvokeEvent, data: string): Promise<void> {
+    const slargs = data.split("|");
+    const ds = this._dsm.getActiveServer(0);
+
+    const payload = ds ? JSON.stringify(ds.getDebugSlotConfig()) : "";
+
+    this._window.webContents.send("appsvc", "asyncgetDedicatedServerDebugStatusComplete|" + slargs[0] + "|" + payload);
   }
 
   register(): void {

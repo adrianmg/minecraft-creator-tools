@@ -9,7 +9,8 @@ import Project from "../../../app/Project";
 import { ProjectItemType } from "../../../app/IProjectItemData";
 import { IGeometry } from "../../../minecraft/IModelGeometry";
 import StorageUtilities from "../../../storage/StorageUtilities";
-import { CheckGeometryFormatInfoGeneratorTest } from "./CheckGeometryFormatInfoData";
+import { CheckGeometryFormatInfoGeneratorTest, GeometryFormatValidationRules } from "./CheckGeometryFormatInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 /***********
  * Generator for Checking Geometry Format
@@ -20,10 +21,12 @@ import { CheckGeometryFormatInfoGeneratorTest } from "./CheckGeometryFormatInfoD
  * @see {@link ../../../../public/data/forms/mctoolsval/geofmt.form.json} for topic definitions
  */
 
-export default class CheckGeometryFormatInfoGenerator implements IProjectInfoGenerator {
+export default class CheckGeometryFormatInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "GEOFMT";
   title = "Geometry Format";
   canAlwaysProcess = true;
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = GeometryFormatValidationRules;
 
   summarize(info: any, infoSet: ProjectInfoSet) {
     info.restrictedPolyMeshFound = infoSet.getSummedDataValue(

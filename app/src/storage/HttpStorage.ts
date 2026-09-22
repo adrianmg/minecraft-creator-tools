@@ -190,6 +190,57 @@ export default class HttpStorage extends StorageBase implements IStorage, INotif
   }
 
   /**
+   * Resolve an API path against this storage's server origin. The server this
+   * storage represents (baseUrl) is not necessarily the page origin - e.g., a
+   * remote managed server administered from a page hosted elsewhere - so API
+   * requests must target baseUrl's origin. The page origin is only a fallback
+   * for relative baseUrls. Returns undefined when no origin can be determined
+   * (relative baseUrl outside a browser context).
+   */
+  resolveServerUrl(path: string): string | undefined {
+    try {
+      return new URL(path, new URL(this.baseUrl).origin).toString();
+    } catch {
+      const globalWindow = globalThis as { location?: { origin?: string } };
+      if (globalWindow.location?.origin) {
+        try {
+          return new URL(path, globalWindow.location.origin).toString();
+        } catch {
+          return undefined;
+        }
+      }
+      return undefined;
+    }
+  }
+
+  /**
+   * Perform an HTTP request against this storage's server. Resolves the path
+   * via resolveServerUrl and attaches the same "Bearer mctauth=<token>"
+   * Authorization header the HttpFile/HttpFolder requests use when an
+   * authToken is present, plus credentials for cookie-authenticated sessions.
+   * Throws when the target URL cannot be resolved.
+   */
+  async fetchApi(path: string, init?: { method?: string; headers?: Record<string, string> }): Promise<Response> {
+    const url = this.resolveServerUrl(path);
+
+    if (url === undefined) {
+      throw new Error("Cannot resolve a server URL for " + path);
+    }
+
+    const headers: Record<string, string> = { ...init?.headers };
+
+    if (this.authToken) {
+      headers["Authorization"] = `Bearer mctauth=${this.authToken}`;
+    }
+
+    return fetch(url, {
+      method: init?.method,
+      credentials: "include",
+      headers,
+    });
+  }
+
+  /**
    * Set the slot number for filtering notifications.
    */
   set slot(value: number | undefined) {

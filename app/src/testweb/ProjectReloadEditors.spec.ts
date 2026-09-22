@@ -136,8 +136,6 @@ test.describe("Project Reload Editors @full", () => {
 
     // Full reload — this is what was triggering the deadlock previously.
     await page.goto(projectUrl, { waitUntil: "load" });
-    await page.waitForTimeout(4000);
-    await page.waitForLoadState("networkidle").catch(() => {});
 
     expect(await waitForEditorReady(page, 20000)).toBe(true);
     await selectEditMode(page, "full").catch(() => {});

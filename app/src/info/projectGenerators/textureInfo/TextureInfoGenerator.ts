@@ -18,7 +18,8 @@ import Database from "../../../minecraft/Database";
 import JsonUIResourceDefinition from "../../../minecraft/JsonUIResourceDefinition";
 import ContentIndex, { AnnotationCategory } from "../../../core/ContentIndex";
 import TextureDefinition from "../../../minecraft/TextureDefinition";
-import { TextureInfoGeneratorTest } from "./TextureInfoData";
+import { TextureInfoGeneratorTest, TextureValidationRules } from "./TextureInfoData";
+import { IValidationRuleProvider, ValidationRuleDefinition } from "../../tests/ValidationRuleDefinition";
 
 export { TextureInfoGeneratorTest };
 
@@ -27,9 +28,11 @@ export { TextureInfoGeneratorTest };
  *
  * @see {@link ../../../../public/data/forms/mctoolsval/texture.form.json} for topic definitions
  */
-export default class TextureInfoGenerator implements IProjectInfoGenerator {
+export default class TextureInfoGenerator implements IProjectInfoGenerator, IValidationRuleProvider {
   id = "TEXTURE";
   title = "Texture Validation";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = TextureValidationRules;
 
   performAddOnValidations = false;
 

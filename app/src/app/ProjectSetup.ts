@@ -56,7 +56,7 @@ export default class ProjectSetup {
 
     // Ensure .vscode files
     results.push(await ProjectSetup.ensureVsCodeExtensions(projectFolder));
-    results.push(await ProjectSetup.ensureVsCodeLaunch(projectFolder));
+    results.push(await ProjectSetup.ensureVsCodeLaunch(project, projectFolder));
     results.push(await ProjectSetup.ensureVsCodeSettings(projectFolder));
     results.push(await ProjectSetup.ensureVsCodeTasks(projectFolder));
 
@@ -230,7 +230,10 @@ export default class ProjectSetup {
     return { filePath, status: "unchanged" };
   }
 
-  private static async ensureVsCodeLaunch(projectFolder: import("../storage/IFolder").default): Promise<SetupResult> {
+  private static async ensureVsCodeLaunch(
+    project: Project,
+    projectFolder: import("../storage/IFolder").default
+  ): Promise<SetupResult> {
     const filePath = ".vscode/launch.json";
     const file = await projectFolder.ensureFileFromRelativePath("/" + filePath);
     const existed = await file.exists();
@@ -239,6 +242,13 @@ export default class ProjectSetup {
     if (!launch) {
       return { filePath, status: "unchanged" };
     }
+
+    // Module targeting reads the attached project's default behavior pack
+    // (getExpectedScriptModuleUuid); without the project assigned, setup
+    // would generate a managed profile with no targetModuleUuid even for a
+    // scripted project - and with multiple scripted packs active, the
+    // debugger could then prompt for or attach to the wrong module.
+    launch.project = project;
 
     await launch.ensureMinContent();
     const persisted = await launch.persist();

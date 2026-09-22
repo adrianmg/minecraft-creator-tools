@@ -14,6 +14,8 @@ import EntityTypeDefinition from "../minecraft/EntityTypeDefinition";
 import ProjectInfoSet from "../info/ProjectInfoSet";
 import ContentIndex from "../core/ContentIndex";
 import Log from "../core/Log";
+import { ValidationRuleDefinition } from "../info/tests/ValidationRuleDefinition";
+import { EntityTypeValidationRules } from "./EntityTypeManagerData";
 
 export enum EntityTypeUpdate {
   UpdateFormatVersionToLatest = 1051,
@@ -42,6 +44,8 @@ export enum EntityTypeInfo {
 export default class EntityTypeManager implements IProjectInfoGenerator, IProjectUpdater {
   id;
   title = "Entity Type";
+
+  readonly validationRules: readonly ValidationRuleDefinition[] = EntityTypeValidationRules;
 
   constructor() {
     this.id = "ENTITYTYPE";

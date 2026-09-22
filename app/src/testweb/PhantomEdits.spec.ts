@@ -38,10 +38,9 @@ async function createFullAddOnProject(page: Page, themeMode?: ThemeMode): Promis
     if (themeMode) {
       await gotoWithTheme(page, themeMode, "/");
     } else {
-      await page.goto("/");
-      await page.waitForLoadState("networkidle");
+      await page.goto("/", { waitUntil: "load" });
+      await page.locator("#root > *").first().waitFor({ state: "attached", timeout: 15000 });
     }
-    await page.waitForTimeout(500);
 
     // Click the Full Add-On template's "Create New" button via stable test id
     const clicked = await clickTemplateCreateButton(page, "addonFull");
@@ -49,7 +48,7 @@ async function createFullAddOnProject(page: Page, themeMode?: ThemeMode): Promis
       console.log("createFullAddOnProject: Could not find Full Add-On create button");
       return false;
     }
-    await page.waitForTimeout(1000);
+    await page.locator(".MuiDialog-root, dialog, [role='dialog']").first().waitFor({ state: "visible", timeout: 5000 });
 
     // Handle the storage location dialog before clicking submit
     await preferBrowserStorageInProjectDialog(page);
@@ -70,10 +69,8 @@ async function createFullAddOnProject(page: Page, themeMode?: ThemeMode): Promis
       }
     }
 
-    // Full Add-On fetches from GitHub; allow extra time and use the shared
-    // editor-ready helper which polls multiple toolbar/welcome variants.
-    await page.waitForTimeout(3000);
-    const ready = await waitForEditorReady(page, 25000);
+    // Full Add-On fetches from GitHub; the shared helper waits for its editor shell.
+    const ready = await waitForEditorReady(page, 60000);
     if (!ready) {
       console.log("createFullAddOnProject: editor did not become ready");
       return false;
@@ -423,9 +420,7 @@ test.describe("Phantom Edit Detection @full", () => {
         const editorScope = page.locator(".ete-area, .bte-area, .ite-area, [role='tablist']").first();
         for (const tabName of tabNames) {
           const tab = editorScope
-            .locator(
-              `[role='tab']:has-text("${tabName}"), button[role='tab'][title*="${tabName}"]`
-            )
+            .locator(`[role='tab']:has-text("${tabName}"), button[role='tab'][title*="${tabName}"]`)
             .first();
           if (await tab.isVisible({ timeout: 300 }).catch(() => false)) {
             await tab.click().catch(() => {});
