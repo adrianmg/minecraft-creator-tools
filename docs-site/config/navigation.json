@@ -97,6 +97,18 @@
                     "match": "Component",
                     "icon": "puzzle-piece"
                   }
+                ],
+                "minecraft/server-editor": [
+                  {
+                    "suffix": "· UI",
+                    "match": "Pane|Property|Slider|Dropdown|Button|Toggle|Text|Combo|Color|Vector|Table|Image|Link|Menu|Divider|Tooltip",
+                    "icon": "table-layout"
+                  },
+                  {
+                    "suffix": "· Tools and widgets",
+                    "match": "Tool|Brush|Widget|Gizmo|Cursor",
+                    "icon": "wand-magic-sparkles"
+                  }
                 ]
               }
             }
@@ -123,6 +135,18 @@
                     "suffix": "· Components",
                     "match": "Component",
                     "icon": "puzzle-piece"
+                  }
+                ],
+                "minecraft/server-editor": [
+                  {
+                    "suffix": "· UI",
+                    "match": "Pane|Property|Slider|Dropdown|Button|Toggle|Text|Combo|Color|Vector|Table|Image|Link|Menu|Divider|Tooltip",
+                    "icon": "table-layout"
+                  },
+                  {
+                    "suffix": "· Tools and widgets",
+                    "match": "Tool|Brush|Widget|Gizmo|Cursor",
+                    "icon": "wand-magic-sparkles"
                   }
                 ]
               }

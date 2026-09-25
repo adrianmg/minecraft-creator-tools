@@ -37,7 +37,7 @@ Only Script API pages use Learn monikers. Each Script API page is generated twic
 
 Links from Beta pages to other Script API pages stay in Beta. `PriorScriptAPI` is the **1.x** version. The three versions are Mintlify `versions` inside the Script API tab.
 
-Within each version, every `@minecraft/*` module is its own sidebar dropdown (`perChild` in `config/navigation.json`), because Mintlify renders every link in the active navigation, including collapsed groups. `@minecraft/server` is further split with `partitions`: Events (`…AfterEvent`, `…BeforeEvent`, and their signals) and Components. This keeps Script API sidebars between about 5 and 450 links instead of about 1,350.
+Within each version, every `@minecraft/*` module is its own sidebar dropdown (`perChild` in `config/navigation.json`), because Mintlify renders every link in the active navigation, including collapsed groups. `@minecraft/server` is further split with `partitions`: Events (`…AfterEvent`, `…BeforeEvent`, and their signals) and Components. `@minecraft/server-editor` is split into UI (panes, properties, and controls) and Tools and widgets. This keeps Script API sidebars at about 340 links or fewer, instead of about 1,350.
 
 Pages outside the navigation are hidden in Mintlify. `seo.indexing: "all"` in `config/docs.base.json` keeps them in search, sitemaps, and AI context.
 
