@@ -30,8 +30,8 @@
       "reason": "Wrong relative path and removed page; linked as the spawn rules reference."
     },
     "Reference/Content/EntityReference/Examples/EntityList.md": {
-      "to": "Reference/Content/EntityReference/Examples/ComponentList.md",
-      "reason": "Removed page; linked as the entity behavior (component) list."
+      "to": "Reference/Content/EntityReference/Examples/AIGoalList.md",
+      "reason": "Removed page; entity behaviors are the minecraft:behavior.* AI goals."
     },
     "Commands/enums/ScoreboardObjectives.md": {
       "to": null,
