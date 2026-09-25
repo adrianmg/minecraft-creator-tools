@@ -20,6 +20,7 @@ The following ssteps are recommended for development, and should be automaticall
 - Run builds after changing code: `npm run corebuild` (in the `app/` folder). This will re-build the NodeJS command line tool and the website.
 - The command line tool can be run via `npx mct` after building. Frequently, you will want to use the `npx mct validate -i <path to folder of content>` command to validate content and test that the results are expected.
 - Test: `npm test`
+- Validation-based unit tests (e.g. `ContentGeneratorFidelityTest.ts`) only get JSONF form checks when `app/public/data/forms/` exists; the build creates it, or run `npx gulp copybedrockschemas`.
 
 ## Repository Structure
 

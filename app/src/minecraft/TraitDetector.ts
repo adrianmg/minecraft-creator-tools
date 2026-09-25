@@ -888,7 +888,8 @@ const ITEM_TRAIT_SIGNATURES: Record<ItemTraitId, ITraitSignature> = {
     validator: (components) => {
       const digger = components["minecraft:digger"];
       if (!digger) return 0;
-      const rules = JSON.stringify(digger);
+      // Ignore "pickaxe" (e.g. minecraft:is_pickaxe_item_destructible) so pickaxes aren't matched as axes.
+      const rules = JSON.stringify(digger).replace(/pickaxe/g, "");
       if (rules.includes("wood") || rules.includes("log") || rules.includes("axe")) return 1.0;
       return 0;
     },
@@ -920,6 +921,7 @@ const ITEM_TRAIT_SIGNATURES: Record<ItemTraitId, ITraitSignature> = {
     optionalComponents: ["minecraft:shooter", "minecraft:use_modifiers"],
     validator: (components) => {
       const hasShooter = "minecraft:shooter" in components;
+      if (components["minecraft:shooter"]?.charge_on_draw === true) return 0;
       const useModifiers = components["minecraft:use_modifiers"];
       const hasChargeTime = useModifiers?.use_duration !== undefined;
       if (hasShooter && hasChargeTime) return 1.0;
@@ -932,7 +934,7 @@ const ITEM_TRAIT_SIGNATURES: Record<ItemTraitId, ITraitSignature> = {
     optionalComponents: ["minecraft:shooter"],
     validator: (components) => {
       const shooter = components["minecraft:shooter"];
-      if (shooter && JSON.stringify(shooter).includes("crossbow")) return 1.0;
+      if (shooter?.charge_on_draw === true || (shooter && JSON.stringify(shooter).includes("crossbow"))) return 1.0;
       return 0;
     },
   },

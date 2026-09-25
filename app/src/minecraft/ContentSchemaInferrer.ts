@@ -1128,13 +1128,14 @@ export default class ContentSchemaInferrer {
       }
     }
 
-    // For scatter features
+    // For scatter features (scatter params are nested under "distribution" in current format versions)
     if (featureType === "minecraft:scatter_feature") {
-      if (featureData.scatter_chance) {
+      const scatterChance = featureData.distribution?.scatter_chance ?? featureData.scatter_chance;
+      if (scatterChance?.numerator && scatterChance?.denominator) {
         if (!definition.spread) {
           definition.spread = { places: [] };
         }
-        definition.spread.rarity = 1 / (featureData.scatter_chance.numerator / featureData.scatter_chance.denominator);
+        definition.spread.rarity = 1 / (scatterChance.numerator / scatterChance.denominator);
       }
     }
 

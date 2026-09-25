@@ -28,7 +28,9 @@ export class FoodItemTrait extends ItemContentTrait {
         },
         "minecraft:use_modifiers": {
           use_duration: 1.6,
+          movement_modifier: 0.35,
         },
+        "minecraft:use_animation": "eat",
       },
     };
   }

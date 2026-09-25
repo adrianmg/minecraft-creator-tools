@@ -9,8 +9,9 @@
  * React component.
  *
  * Key behavior:
- * - Writes behavior pack files (entities, blocks, items, loot tables, recipes, spawn rules)
- * - Writes resource pack files (entity resources, geometries, textures, render controllers)
+ * - Writes behavior pack files (entities, blocks, items, loot tables, recipes, spawn rules, features, feature rules)
+ * - Writes resource pack files (entity resources, attachables, geometries, textures, render controllers),
+ *   preserving nested paths such as loot_tables/blocks/ and textures/models/armor/
  * - Deep-merges singleton JSON files (terrain_texture.json, item_texture.json, blocks.json,
  *   sound_definitions.json, music_definitions.json) so that multiple generation passes
  *   accumulate entries rather than overwriting previous content
@@ -51,13 +52,45 @@ function serializeContent(generatedFile: IGeneratedFile): string | Uint8Array {
 }
 
 /**
- * Write a list of generated files to a specific subfolder within a pack folder.
+ * Resolve a pack-relative path under `rootFolder`, creating intermediate folders.
+ */
+function ensureFileLocation(rootFolder: IFolder, relativePath: string): [IFolder, string] {
+  const segments = relativePath
+    .split("/")
+    .filter((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+  const fileName = segments.pop() || getFilename(relativePath);
+
+  let folder = rootFolder;
+  for (const segment of segments) {
+    folder = folder.ensureFolder(segment);
+  }
+  return [folder, fileName];
+}
+
+/**
+ * Write a list of generated files to a specific subfolder within a pack folder. Paths under that
+ * subfolder keep their nested folders (e.g. "loot_tables/blocks/ore.json") so cross-file
+ * references such as minecraft:loot stay valid; other paths are written by filename.
  */
 function writeFilesToSubfolder(packFolder: IFolder, subfolderName: string, files: IGeneratedFile[]): void {
   if (files.length === 0) return;
   const subfolder = packFolder.ensureFolder(subfolderName);
+  const prefix = subfolderName + "/";
   for (const file of files) {
-    StorageUtilities.writeFileIfNew(subfolder, getFilename(file.path), serializeContent(file));
+    const [folder, fileName] = file.path.startsWith(prefix)
+      ? ensureFileLocation(subfolder, file.path.substring(prefix.length))
+      : [subfolder, getFilename(file.path)];
+    StorageUtilities.writeFileIfNew(folder, fileName, serializeContent(file));
+  }
+}
+
+/**
+ * Write generated files at their pack-relative paths (e.g. "attachables/ruby_helmet.json").
+ */
+function writeFilesAtPackPaths(packFolder: IFolder, files: IGeneratedFile[]): void {
+  for (const file of files) {
+    const [folder, fileName] = ensureFileLocation(packFolder, file.path);
+    StorageUtilities.writeFileIfNew(folder, fileName, serializeContent(file));
   }
 }
 
@@ -142,6 +175,8 @@ export class ContentWriter {
       writeFilesToSubfolder(bpFolder, "loot_tables", content.lootTables);
       writeFilesToSubfolder(bpFolder, "recipes", content.recipes);
       writeFilesToSubfolder(bpFolder, "spawn_rules", content.spawnRules);
+      writeFilesToSubfolder(bpFolder, "features", content.features);
+      writeFilesToSubfolder(bpFolder, "feature_rules", content.featureRules);
     }
 
     // === Resource Pack ===
@@ -150,6 +185,10 @@ export class ContentWriter {
 
       // Render controllers
       writeFilesToSubfolder(rpFolder, "render_controllers", content.renderControllers);
+
+      // Block/item resources (e.g. armor attachables)
+      writeFilesAtPackPaths(rpFolder, content.blockResources);
+      writeFilesAtPackPaths(rpFolder, content.itemResources);
 
       // Geometries — determine subfolder from path (e.g., "models/blocks/slab.geo.json" → "blocks")
       for (const geometryFile of content.geometries) {
@@ -162,12 +201,17 @@ export class ContentWriter {
 
       // Textures — determine subfolder from path and handle binary content
       for (const textureFile of content.textures) {
-        const pathParts = textureFile.path.split("/");
-        const subfolderName = pathParts.length >= 2 ? pathParts[pathParts.length - 2] : "entity";
-
         const texturesFolder = rpFolder.ensureFolder("textures");
-        const subFolder = texturesFolder.ensureFolder(subfolderName);
-        const fileName = getFilename(textureFile.path);
+        let subFolder: IFolder;
+        let fileName: string;
+        if (textureFile.path.startsWith("textures/")) {
+          // Keep nested folders, e.g. textures/models/armor/<material>_1.png referenced by attachables.
+          [subFolder, fileName] = ensureFileLocation(texturesFolder, textureFile.path.substring("textures/".length));
+        } else {
+          const pathParts = textureFile.path.split("/");
+          subFolder = texturesFolder.ensureFolder(pathParts.length >= 2 ? pathParts[pathParts.length - 2] : "entity");
+          fileName = getFilename(textureFile.path);
+        }
 
         if (subFolder.fileExists(fileName)) {
           Log.debug(`Skipping texture "${fileName}" — file already exists`);

@@ -596,17 +596,39 @@ export const FoodEffectSchema = z.object({
  */
 export const FoodPropertiesSchema = z.object({
   nutrition: z.number().int().describe("Hunger points restored"),
-  saturation: z.number().optional().describe("Saturation modifier"),
+  saturation: z
+    .number()
+    .optional()
+    .describe(
+      "Saturation modifier (decimal, e.g. 0.6 for bread-like food). Emitted as minecraft:food saturation_modifier."
+    ),
   canAlwaysEat: z.boolean().optional().describe("Can eat when full"),
-  effects: z.array(FoodEffectSchema).optional().describe("Status effects when eaten"),
+  effects: z
+    .array(FoodEffectSchema)
+    .optional()
+    .describe(
+      "Status effects when eaten. Not emitted: minecraft:food has no effects field, so these produce a warning " +
+        "and must be applied from a script (e.g., world.afterEvents.itemCompleteUse)."
+    ),
 });
 
 /**
  * Tool properties.
  */
 export const ToolPropertiesSchema = z.object({
-  miningSpeed: z.number().optional().describe("Mining speed multiplier"),
-  miningLevel: z.enum(["wood", "stone", "iron", "diamond", "netherite"]).optional(),
+  miningSpeed: z
+    .number()
+    .optional()
+    .describe(
+      "Integer minecraft:digger speed. Defaults to the miningLevel speed (wood 2, stone 4, iron 6, diamond 8, netherite 9)."
+    ),
+  miningLevel: z
+    .enum(["wood", "stone", "iron", "diamond", "netherite"])
+    .optional()
+    .describe(
+      "Tool tier (default iron). Adds the vanilla tier tag (e.g. minecraft:iron_tier) so tier-gated blocks drop, " +
+        "and sets the default digger speed. Applies with the pickaxe/axe/shovel/hoe/sword traits."
+    ),
   durability: z.number().int().describe("Tool durability"),
 });
 
@@ -638,15 +660,17 @@ export const ProjectilePropertiesSchema = z
     projectile: z
       .string()
       .describe(
-        "Entity ID to shoot/throw (e.g., 'minecraft:arrow', 'minecraft:snowball', or a custom 'namespace:arrow_of_doom')."
+        "Entity ID to throw (e.g., 'minecraft:snowball'), or for chargeable shooters the ammunition item ID, which must " +
+          "have minecraft:projectile (e.g., 'minecraft:arrow')."
       ),
     launchPower: z.number().optional().describe("Launch power multiplier. Default: 1.0."),
     chargeable: z
       .boolean()
       .optional()
       .describe(
-        "True for bow/crossbow-style items that charge while held (emits minecraft:shooter + minecraft:chargeable). " +
-          "False/omitted for snowball-style throwables (emits minecraft:throwable)."
+        "True for bow/crossbow-style items that are drawn and released (emits minecraft:shooter + minecraft:use_modifiers). " +
+          "False for snowball-style throwables (emits minecraft:throwable). Defaults to true with the bow/crossbow traits, " +
+          "which already shoot arrows when 'projectile' is omitted."
       ),
   })
   .describe("Projectile behavior for items that shoot or throw an entity.");
@@ -669,7 +693,7 @@ export const ItemTypeSchema = z
     weapon: WeaponPropertiesSchema.optional().describe("Weapon properties"),
     armor: ArmorPropertiesSchema.optional().describe("Armor properties"),
     projectile: ProjectilePropertiesSchema.optional().describe(
-      "Projectile behavior — emits minecraft:shooter (+minecraft:chargeable when chargeable=true) or minecraft:throwable."
+      "Projectile behavior — emits minecraft:shooter (+minecraft:use_modifiers when chargeable) or minecraft:throwable."
     ),
     glint: z.boolean().optional().describe("Enchanted glint effect"),
     fuel: z.number().int().optional().describe("Burn duration in ticks"),
@@ -829,10 +853,25 @@ export const StructureSchema = z
  * Feature placement.
  */
 export const FeaturePlacementSchema = z.object({
-  type: z.enum(["block", "structure", "tree", "ore", "vegetation"]).describe("What to place"),
-  id: z.string().describe("Block/structure ID"),
-  count: z.union([z.number().int(), z.object({ min: z.number().int(), max: z.number().int() })]).optional(),
-  replacesBlocks: z.array(z.string()).optional().describe("Blocks that can be replaced (for ore)"),
+  type: z
+    .enum(["block", "structure", "tree", "ore", "vegetation"])
+    .describe(
+      "What to place. 'tree' is not supported by spread (warning); use nativeFeature with minecraft:tree_feature."
+    ),
+  id: z
+    .string()
+    .describe(
+      "Block ID (unnamespaced IDs use this pack's namespace), or structure name ('namespace:name' for " +
+        "structures/namespace/name.mcstructure; a bare name maps to mystructure:name)."
+    ),
+  count: z
+    .union([z.number().int(), z.object({ min: z.number().int(), max: z.number().int() })])
+    .optional()
+    .describe("For ore: vein size (a range is emitted as its midpoint)."),
+  replacesBlocks: z
+    .array(z.string())
+    .optional()
+    .describe("Blocks that can be replaced. Ore default: stone. Block/vegetation/structure default: air."),
 });
 
 /**
@@ -850,7 +889,7 @@ export const HeightPlacementSchema = z.object({
  */
 export const ScatterPatternSchema = z.object({
   type: z.enum(["uniform", "cluster", "line"]),
-  radius: z.number().optional(),
+  radius: z.number().optional().describe("Cluster radius (default 4, max 7) or half the line length (default 4)."),
 });
 
 /**
@@ -866,12 +905,13 @@ export const FeatureSpreadSchema = z
     count: z
       .union([z.number().int(), z.object({ min: z.number().int(), max: z.number().int() })])
       .optional()
-      .describe("Placements per generation attempt (fixed count or {min,max})."),
+      .describe("Placements per chunk (fixed count, or {min,max} randomized per chunk). Default: 1."),
     heightPlacement: HeightPlacementSchema.optional().describe(
-      "Where vertically to place. 'surface' = top of world, 'underground' = below surface, 'fixed' = at Y=y, 'range' = within [min, max]."
+      "Where vertically to place. 'surface' = top of world, 'underground' = below surface, 'fixed' = at Y=y, 'range' = within [min, max]. " +
+        "Default: underground when placing ore, otherwise surface."
     ),
     scatter: ScatterPatternSchema.optional().describe(
-      "Distribution around the base point. 'uniform' spreads across a radius, 'cluster' groups tightly, 'line' places in a line."
+      "Horizontal distribution. 'uniform' (default) spreads across the chunk, 'cluster' groups around a random point, 'line' places along a row."
     ),
     biomes: z.array(z.string()).optional().describe("Biome IDs in which this feature generates."),
     rarity: z.number().optional().describe("1 in N chunks - lower N = more frequent"),

@@ -908,7 +908,7 @@ describe("ContentGenerator", function () {
       expect(identical, "block.texture must change the generated PNG; got identical bytes").to.equal(false);
     });
 
-    it("should emit minecraft:shooter + minecraft:chargeable for chargeable projectile items", async function () {
+    it("should emit minecraft:shooter + minecraft:use_modifiers for chargeable projectile items", async function () {
       const def: any = {
         schemaVersion: "1.0.0",
         namespace: "test",
@@ -925,9 +925,11 @@ describe("ContentGenerator", function () {
       const item = result.itemBehaviors[0].content as any;
       const components = item["minecraft:item"].components;
       expect(components["minecraft:shooter"], "chargeable item should emit minecraft:shooter").to.exist;
-      expect(components["minecraft:shooter"].projectiles[0].projectile).to.equal("minecraft:arrow");
-      expect(components["minecraft:chargeable"], "chargeable item should emit minecraft:chargeable").to.exist;
+      expect(components["minecraft:shooter"].ammunition[0].item).to.equal("minecraft:arrow");
+      expect(components["minecraft:use_modifiers"], "minecraft:shooter requires minecraft:use_modifiers").to.exist;
+      expect(components["minecraft:chargeable"], "minecraft:chargeable was removed in 1.20.50").to.not.exist;
       expect(components["minecraft:throwable"], "chargeable item should NOT emit minecraft:throwable").to.not.exist;
+      expect(result.summary.warnings.some((w) => w.includes("launchPower"))).to.equal(true);
     });
 
     it("should emit minecraft:throwable for non-chargeable projectile items", async function () {

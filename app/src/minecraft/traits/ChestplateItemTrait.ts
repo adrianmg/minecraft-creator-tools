@@ -21,14 +21,12 @@ export class ChestplateItemTrait extends ItemContentTrait {
       description: "Chest armor",
       category: "armor",
       components: {
-        "minecraft:armor": {
-          protection: protection,
-        },
         "minecraft:durability": {
           max_durability: durability,
         },
         "minecraft:wearable": {
           slot: "slot.armor.chest",
+          protection: protection,
           dispensable: true,
         },
         "minecraft:enchantable": {

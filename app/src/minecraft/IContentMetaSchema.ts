@@ -703,13 +703,16 @@ export interface IFoodProperties {
   /** Hunger points restored */
   nutrition: number;
 
-  /** Saturation modifier */
+  /** Saturation modifier (emitted as minecraft:food saturation_modifier, default 0.6) */
   saturation?: number;
 
   /** Can eat when full? */
   canAlwaysEat?: boolean;
 
-  /** Status effects when eaten */
+  /**
+   * Status effects when eaten. Not emitted (minecraft:food has no effects field); the generator
+   * warns that they must be applied from a script.
+   */
   effects?: IFoodEffect[];
 }
 
@@ -734,10 +737,10 @@ export interface IFoodEffect {
  * Tool properties.
  */
 export interface IToolProperties {
-  /** Mining speed multiplier */
+  /** Integer minecraft:digger speed (defaults to the miningLevel speed) */
   miningSpeed?: number;
 
-  /** Mining level */
+  /** Tool tier (default iron): adds the vanilla tier tag and sets the default digger speed */
   miningLevel?: "wood" | "stone" | "iron" | "diamond" | "netherite";
 
   /** Durability */
@@ -788,7 +791,7 @@ export interface IProjectileProperties {
   /** Launch power */
   launchPower?: number;
 
-  /** Is it a chargeble item (bow-like)? */
+  /** Is it a chargeable item (bow-like)? Defaults to true with the bow/crossbow traits. */
   chargeable?: boolean;
 }
 

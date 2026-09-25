@@ -21,14 +21,12 @@ export class HelmetItemTrait extends ItemContentTrait {
       description: "Head armor",
       category: "armor",
       components: {
-        "minecraft:armor": {
-          protection: protection,
-        },
         "minecraft:durability": {
           max_durability: durability,
         },
         "minecraft:wearable": {
           slot: "slot.armor.head",
+          protection: protection,
           dispensable: true,
         },
         "minecraft:enchantable": {

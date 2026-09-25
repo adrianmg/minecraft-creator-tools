@@ -41,6 +41,7 @@ import IGalleryItem from "../../../app/IGalleryItem";
 import ProjectCreateManager from "../../../app/ProjectCreateManager";
 import ProjectItem from "../../../app/ProjectItem";
 import { ContentGenerator } from "../../../minecraft/ContentGenerator";
+import { ContentWriter } from "../../../minecraft/ContentWriter";
 import Log from "../../../core/Log";
 import { WithLocalizationProps, withLocalization } from "../../withLocalization";
 
@@ -143,103 +144,8 @@ class ProjectActions extends Component<IProjectActionsProps, IProjectActionsStat
       const generator = new ContentGenerator(definition);
       const content = await generator.generate();
 
-      const bpFolder = await project.ensureDefaultBehaviorPackFolder();
-      const rpFolder = await project.ensureDefaultResourcePackFolder();
+      await ContentWriter.writeGeneratedContent(project, content);
 
-      const getFilename = (filePath: string) => {
-        const parts = filePath.split("/");
-        return parts[parts.length - 1];
-      };
-
-      if (bpFolder) {
-        for (const f of content.entityBehaviors) {
-          bpFolder
-            .ensureFolder("entities")
-            .ensureFile(getFilename(f.path))
-            .setContent(JSON.stringify(f.content, null, 2));
-        }
-        for (const f of content.blockBehaviors) {
-          bpFolder
-            .ensureFolder("blocks")
-            .ensureFile(getFilename(f.path))
-            .setContent(JSON.stringify(f.content, null, 2));
-        }
-        for (const f of content.itemBehaviors) {
-          bpFolder
-            .ensureFolder("items")
-            .ensureFile(getFilename(f.path))
-            .setContent(JSON.stringify(f.content, null, 2));
-        }
-        for (const f of content.lootTables) {
-          bpFolder
-            .ensureFolder("loot_tables")
-            .ensureFile(getFilename(f.path))
-            .setContent(JSON.stringify(f.content, null, 2));
-        }
-        for (const f of content.recipes) {
-          bpFolder
-            .ensureFolder("recipes")
-            .ensureFile(getFilename(f.path))
-            .setContent(JSON.stringify(f.content, null, 2));
-        }
-        for (const f of content.spawnRules) {
-          bpFolder
-            .ensureFolder("spawn_rules")
-            .ensureFile(getFilename(f.path))
-            .setContent(JSON.stringify(f.content, null, 2));
-        }
-      }
-
-      if (rpFolder) {
-        for (const f of content.entityResources) {
-          rpFolder
-            .ensureFolder("entity")
-            .ensureFile(getFilename(f.path))
-            .setContent(JSON.stringify(f.content, null, 2));
-        }
-        for (const f of content.geometries) {
-          rpFolder
-            .ensureFolder("models")
-            .ensureFolder("entity")
-            .ensureFile(getFilename(f.path))
-            .setContent(JSON.stringify(f.content, null, 2));
-        }
-        for (const f of content.textures) {
-          const pathParts = f.path.split("/");
-          const subfolderName = pathParts.length >= 2 ? pathParts[pathParts.length - 2] : "entity";
-          const subFolder = rpFolder.ensureFolder("textures").ensureFolder(subfolderName);
-          const file = subFolder.ensureFile(getFilename(f.path));
-          if (f.content instanceof Uint8Array) {
-            file.setContent(f.content);
-          } else if (Array.isArray(f.content)) {
-            file.setContent(new Uint8Array(f.content as number[]));
-          } else if (typeof f.content === "string") {
-            file.setContent(f.content);
-          } else {
-            file.setContent(JSON.stringify(f.content, null, 2));
-          }
-        }
-        for (const f of content.renderControllers) {
-          rpFolder
-            .ensureFolder("render_controllers")
-            .ensureFile(getFilename(f.path))
-            .setContent(JSON.stringify(f.content, null, 2));
-        }
-        if (content.terrainTextures) {
-          rpFolder
-            .ensureFolder("textures")
-            .ensureFile("terrain_texture.json")
-            .setContent(JSON.stringify(content.terrainTextures.content, null, 2));
-        }
-        if (content.itemTextures) {
-          rpFolder
-            .ensureFolder("textures")
-            .ensureFile("item_texture.json")
-            .setContent(JSON.stringify(content.itemTextures.content, null, 2));
-        }
-      }
-
-      await project.save();
       await project.inferProjectItemsFromFiles(true);
       await project.processRelations(true);
 

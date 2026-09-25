@@ -10,9 +10,14 @@
     "components": {
       "minecraft:food": {
         "nutrition": 8,
-        "saturation_modifier": "custom",
+        "saturation_modifier": 0.8,
         "can_always_eat": false
       },
+      "minecraft:use_modifiers": {
+        "use_duration": 1.6,
+        "movement_modifier": 0.35
+      },
+      "minecraft:use_animation": "eat",
       "minecraft:icon": "mymod:goblin_stew",
       "minecraft:display_name": {
         "value": "Goblin Stew"

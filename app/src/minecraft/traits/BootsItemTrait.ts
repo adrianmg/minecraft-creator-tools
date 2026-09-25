@@ -21,14 +21,12 @@ export class BootsItemTrait extends ItemContentTrait {
       description: "Foot armor",
       category: "armor",
       components: {
-        "minecraft:armor": {
-          protection: protection,
-        },
         "minecraft:durability": {
           max_durability: durability,
         },
         "minecraft:wearable": {
           slot: "slot.armor.feet",
+          protection: protection,
           dispensable: true,
         },
         "minecraft:enchantable": {

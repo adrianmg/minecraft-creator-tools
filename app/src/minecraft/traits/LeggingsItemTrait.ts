@@ -21,14 +21,12 @@ export class LeggingsItemTrait extends ItemContentTrait {
       description: "Leg armor",
       category: "armor",
       components: {
-        "minecraft:armor": {
-          protection: protection,
-        },
         "minecraft:durability": {
           max_durability: durability,
         },
         "minecraft:wearable": {
           slot: "slot.armor.legs",
+          protection: protection,
           dispensable: true,
         },
         "minecraft:enchantable": {

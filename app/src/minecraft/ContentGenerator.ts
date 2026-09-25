@@ -40,6 +40,9 @@ import {
   IGenerationOptions,
   ITextureSpec,
   IBlockTexture,
+  IFeaturePlacement,
+  IHeightPlacement,
+  IScatterPattern,
 } from "./IContentMetaSchema";
 import CreatorToolsHost from "../app/CreatorToolsHost";
 import ImageCodec from "../core/ImageCodec";
@@ -498,6 +501,53 @@ const BLOCK_TRAIT_COMPONENTS: Record<BlockTraitId, Record<string, any>> = {
   },
 };
 
+/** Feature spread placement types that map to a native feature. */
+const SUPPORTED_SPREAD_PLACEMENT_TYPES: IFeaturePlacement["type"][] = ["ore", "block", "vegetation", "structure"];
+
+/** Blocks that "vegetation" placements must sit on. */
+const VEGETATION_SOIL_BLOCKS = [
+  "minecraft:grass_block",
+  "minecraft:dirt",
+  "minecraft:coarse_dirt",
+  "minecraft:podzol",
+  "minecraft:moss_block",
+];
+
+/**
+ * Builds a working bow/crossbow shooter. minecraft:shooter only fires when the item also has
+ * minecraft:use_modifiers, and the ammunition item must carry minecraft:projectile
+ * (vanilla minecraft:arrow does). Crossbows charge on draw; bows scale power by draw time.
+ */
+function buildShooterComponents(kind: "bow" | "crossbow", ammunitionItem: string): Record<string, any> {
+  const isCrossbow = kind === "crossbow";
+  return {
+    "minecraft:shooter": {
+      ammunition: [{ item: ammunitionItem, use_offhand: true, search_inventory: true, use_in_creative: true }],
+      max_draw_duration: isCrossbow ? 1.25 : 1.0,
+      scale_power_by_draw_duration: !isCrossbow,
+      charge_on_draw: isCrossbow,
+    },
+    "minecraft:use_modifiers": { use_duration: 3600, movement_modifier: 0.35 },
+  };
+}
+
+type ArmorPiece = "helmet" | "chestplate" | "leggings" | "boots";
+
+const ARMOR_SLOT_TO_PIECE: Record<string, ArmorPiece> = {
+  "slot.armor.head": "helmet",
+  "slot.armor.chest": "chestplate",
+  "slot.armor.legs": "leggings",
+  "slot.armor.feet": "boots",
+};
+
+/** Mirrors vanilla armor attachables (e.g. RP/attachables/iron_helmet.json). */
+const ARMOR_ATTACHABLE_INFO: Record<ArmorPiece, { layer: 1 | 2; visibilityVariable: string }> = {
+  helmet: { layer: 1, visibilityVariable: "helmet_layer_visible" },
+  chestplate: { layer: 1, visibilityVariable: "chest_layer_visible" },
+  leggings: { layer: 2, visibilityVariable: "leg_layer_visible" },
+  boots: { layer: 1, visibilityVariable: "boot_layer_visible" },
+};
+
 /**
  * Item trait components.
  */
@@ -536,35 +586,40 @@ const ITEM_TRAIT_COMPONENTS: Record<ItemTraitId, Record<string, any>> = {
     "minecraft:enchantable": { slot: "hoe", value: 10 },
   },
   bow: {
-    "minecraft:use_duration": 72000,
+    ...buildShooterComponents("bow", "minecraft:arrow"),
+    "minecraft:max_stack_size": 1,
+    "minecraft:durability": { max_durability: 384 },
     "minecraft:enchantable": { slot: "bow", value: 1 },
   },
   crossbow: {
-    "minecraft:use_duration": 72000,
+    ...buildShooterComponents("crossbow", "minecraft:arrow"),
+    "minecraft:max_stack_size": 1,
+    "minecraft:durability": { max_durability: 465 },
     "minecraft:enchantable": { slot: "crossbow", value: 1 },
   },
   food: {
     "minecraft:food": {
       nutrition: 4,
-      saturation_modifier: "normal",
+      saturation_modifier: 0.6,
       can_always_eat: false,
     },
-    "minecraft:use_duration": 32,
+    "minecraft:use_modifiers": { use_duration: 1.6, movement_modifier: 0.35 },
+    "minecraft:use_animation": "eat",
   },
   armor_helmet: {
-    "minecraft:wearable": { slot: "slot.armor.head" },
+    "minecraft:wearable": { slot: "slot.armor.head", protection: 2 },
     "minecraft:enchantable": { slot: "armor_head", value: 10 },
   },
   armor_chestplate: {
-    "minecraft:wearable": { slot: "slot.armor.chest" },
+    "minecraft:wearable": { slot: "slot.armor.chest", protection: 6 },
     "minecraft:enchantable": { slot: "armor_torso", value: 10 },
   },
   armor_leggings: {
-    "minecraft:wearable": { slot: "slot.armor.legs" },
+    "minecraft:wearable": { slot: "slot.armor.legs", protection: 5 },
     "minecraft:enchantable": { slot: "armor_legs", value: 10 },
   },
   armor_boots: {
-    "minecraft:wearable": { slot: "slot.armor.feet" },
+    "minecraft:wearable": { slot: "slot.armor.feet", protection: 2 },
     "minecraft:enchantable": { slot: "armor_feet", value: 10 },
   },
   throwable: {
@@ -2571,6 +2626,13 @@ export class ContentGenerator {
       };
     }
 
+    // Without minecraft:loot a block drops itself, ignoring the generated drops table.
+    let blockLootTable: IGeneratedFile | undefined;
+    if (block.drops && block.drops.length > 0) {
+      blockLootTable = this._generateLootTableFromDrops(block.id, block.drops, "blocks");
+      components["minecraft:loot"] = blockLootTable.path;
+    }
+
     // Apply native components
     if (block.components) {
       components = { ...components, ...block.components };
@@ -2640,10 +2702,8 @@ export class ContentGenerator {
       });
     }
 
-    // Generate loot table from drops
-    if (block.drops && block.drops.length > 0) {
-      const lootTable = this._generateLootTableFromDrops(block.id, block.drops, "blocks");
-      result.lootTables.push(lootTable);
+    if (blockLootTable) {
+      result.lootTables.push(blockLootTable);
     }
   }
 
@@ -2720,6 +2780,8 @@ export class ContentGenerator {
             protection: item.armor?.defense,
             nutrition: item.food?.nutrition,
             saturation: item.food?.saturation,
+            miningSpeed: item.tool?.miningSpeed,
+            miningLevel: item.tool?.miningLevel,
           });
 
           // Merge components
@@ -2760,20 +2822,27 @@ export class ContentGenerator {
       components["minecraft:fuel"] = { duration: item.fuel / 20 }; // Convert ticks to seconds
     }
 
-    // Food properties
+    // Food properties. minecraft:food only accepts nutrition, saturation_modifier (a number),
+    // can_always_eat and using_converts_to, and needs minecraft:use_modifiers to be edible.
     if (item.food) {
+      const traitSaturation = components["minecraft:food"]?.saturation_modifier;
       components["minecraft:food"] = {
         nutrition: item.food.nutrition,
-        saturation_modifier: item.food.saturation !== undefined ? "custom" : "normal",
-        can_always_eat: item.food.canAlwaysEat || false,
+        saturation_modifier: item.food.saturation ?? (typeof traitSaturation === "number" ? traitSaturation : 0.6),
+        can_always_eat: item.food.canAlwaysEat ?? false,
       };
-      if (item.food.effects) {
-        components["minecraft:food"].effects = item.food.effects.map((e) => ({
-          name: e.name,
-          duration: e.duration,
-          amplifier: e.amplifier || 0,
-          chance: e.chance || 1.0,
-        }));
+      if (!components["minecraft:use_modifiers"]) {
+        components["minecraft:use_modifiers"] = { use_duration: 1.6, movement_modifier: 0.35 };
+      }
+      if (!components["minecraft:use_animation"]) {
+        components["minecraft:use_animation"] = "eat";
+      }
+      if (item.food.effects && item.food.effects.length > 0) {
+        this._warnings.push(
+          `Item '${item.id}': food.effects (${item.food.effects.map((e) => e.name).join(", ")}) were not emitted. ` +
+            `minecraft:food does not support status effects; apply them from a script ` +
+            `(e.g., world.afterEvents.itemCompleteUse -> player.addEffect) or an item custom component.`
+        );
       }
     }
 
@@ -2785,7 +2854,7 @@ export class ContentGenerator {
       }
     }
 
-    // Armor properties
+    // Armor properties. Protection lives on minecraft:wearable (minecraft:armor is a legacy component).
     if (item.armor) {
       const slotMap: Record<string, string> = {
         helmet: "slot.armor.head",
@@ -2795,36 +2864,49 @@ export class ContentGenerator {
       };
       components["minecraft:wearable"] = {
         slot: slotMap[item.armor.slot] || "slot.armor.chest",
+        protection: item.armor.defense,
       };
-      components["minecraft:armor"] = { protection: item.armor.defense };
       components["minecraft:durability"] = { max_durability: item.armor.durability };
     }
 
-    // Tool properties
+    // Tool properties. miningLevel/miningSpeed are applied by the tool traits (digger speeds + tier tags).
     if (item.tool) {
       components["minecraft:durability"] = { max_durability: item.tool.durability };
+      const hasToolTrait = item.traits?.some((t) => ["sword", "pickaxe", "axe", "shovel", "hoe"].includes(t));
+      if (!hasToolTrait && (item.tool.miningLevel !== undefined || item.tool.miningSpeed !== undefined)) {
+        this._warnings.push(
+          `Item '${item.id}': tool.miningLevel/miningSpeed only take effect with a pickaxe, axe, shovel, hoe, or sword trait.`
+        );
+      }
     }
 
     // Projectile properties (bow/crossbow-style chargeable shooters, or throwables like snowballs).
+    // Without an explicit projectile, the bow/crossbow traits already provide arrow-firing defaults.
     if (item.projectile) {
       const projectileEntityId = item.projectile.projectile.includes(":")
         ? item.projectile.projectile
         : `minecraft:${item.projectile.projectile}`;
-      const launchPower = item.projectile.launchPower ?? 1.0;
+      const shooterKind = item.traits?.includes("crossbow") ? "crossbow" : "bow";
+      const hasShooterTrait = item.traits?.includes("bow") || item.traits?.includes("crossbow") || false;
+      const chargeable = item.projectile.chargeable ?? hasShooterTrait;
 
-      if (item.projectile.chargeable) {
-        // Bow/crossbow: charge-while-held + release-to-shoot.
-        components["minecraft:shooter"] = {
-          projectiles: [
-            {
-              projectile: projectileEntityId,
-              launch_power_scale: launchPower,
-            },
-          ],
-        };
-        components["minecraft:chargeable"] = { movement_modifier: 0.5 };
-        components["minecraft:use_modifiers"] = { use_duration: 999999, movement_modifier: 0.5 };
+      if (chargeable) {
+        // Bow/crossbow: draw-and-release shooter. The projectile id is used as the ammunition item,
+        // which must itself carry minecraft:projectile (vanilla minecraft:arrow does).
+        Object.assign(components, buildShooterComponents(shooterKind, projectileEntityId));
+        if (item.projectile.launchPower !== undefined) {
+          this._warnings.push(
+            `Item '${item.id}': projectile.launchPower is ignored for chargeable shooters; ` +
+              `minecraft:shooter launch power comes from the draw duration and the ammunition's projectile.`
+          );
+        }
       } else {
+        if (hasShooterTrait) {
+          // An explicit throwable replaces the bow/crossbow trait's shooter defaults.
+          delete components["minecraft:shooter"];
+          delete components["minecraft:use_modifiers"];
+        }
+        const launchPower = item.projectile.launchPower ?? 1.0;
         // Throwable (snowball/egg style): single-use, no charge.
         components["minecraft:throwable"] = {
           do_swing_animation: true,
@@ -2881,6 +2963,78 @@ export class ContentGenerator {
         content: texture,
       });
     }
+
+    // Worn armor is only rendered through a resource-pack attachable.
+    await this._generateArmorAttachable(item, components, result);
+  }
+
+  /**
+   * Generates the attachable + armor layer texture that render a wearable armor item on its wearer.
+   * Mirrors vanilla armor attachables: helmet/chestplate/boots use the 64x32 layer 1 texture
+   * (`<material>_1`), leggings use layer 2 (`<material>_2`). The material name is namespaced so a
+   * custom "diamond_helmet" never overrides vanilla textures/models/armor/diamond_1.
+   */
+  private async _generateArmorAttachable(
+    item: IItemTypeDefinition,
+    components: Record<string, any>,
+    result: IGeneratedContent
+  ): Promise<void> {
+    const wearable = components["minecraft:wearable"];
+    const piece: ArmorPiece | undefined =
+      wearable && typeof wearable === "object" ? ARMOR_SLOT_TO_PIECE[wearable.slot] : undefined;
+    if (!piece) {
+      return;
+    }
+
+    const info = ARMOR_ATTACHABLE_INFO[piece];
+    const safeId = ContentGenerator._sanitizeIdForPath(item.id);
+    const materialName = `${this._namespace}_${ContentGenerator._getArmorMaterialName(safeId)}`;
+    const texturePath = `textures/models/armor/${materialName}_${info.layer}`;
+
+    result.itemResources.push({
+      path: `attachables/${safeId}.json`,
+      pack: "resource",
+      type: "json",
+      content: {
+        format_version: "1.10.0",
+        "minecraft:attachable": {
+          description: {
+            identifier: `${this._namespace}:${item.id}`,
+            materials: { default: "armor", enchanted: "armor_enchanted" },
+            textures: { default: texturePath, enchanted: "textures/misc/enchanted_actor_glint" },
+            geometry: { default: `geometry.humanoid.armor.${piece}` },
+            scripts: { parent_setup: `variable.${info.visibilityVariable} = 0.0;` },
+            render_controllers: ["controller.render.armor"],
+          },
+        },
+      },
+    });
+
+    // Pieces of the same set share a layer texture; only emit it once.
+    const texturePngPath = `${texturePath}.png`;
+    if (!result.textures.some((t) => t.path === texturePngPath)) {
+      const png = await this._generateArmorLayerTexture(item.color || "#808080", `armor-${materialName}-${info.layer}`);
+      if (png) {
+        result.textures.push({ path: texturePngPath, pack: "resource", type: "png", content: png });
+      }
+    }
+  }
+
+  /** "ruby_helmet" → "ruby", so every piece of a set shares textures/models/armor/<ns>_ruby_1|_2. */
+  private static _getArmorMaterialName(itemId: string): string {
+    const stripped = itemId.replace(/_(helmet|chestplate|leggings|boots)$/, "");
+    return stripped.length > 0 ? stripped : itemId;
+  }
+
+  private async _generateArmorLayerTexture(color: string, contextString: string): Promise<Uint8Array | undefined> {
+    const shade = this._darkenColor(color, 0.2);
+    const rendered = await this._renderTextureSpecToPng(
+      { generate: { type: "dither_noise", colors: [color, shade] } },
+      64,
+      32,
+      contextString
+    );
+    return rendered ?? (await PngEncoder.createCheckerboardPngAsync(64, 32, color, shade, 2));
   }
 
   /**
@@ -3389,76 +3543,122 @@ export class ContentGenerator {
     }
   }
 
+  /**
+   * Expands a feature spread into feature_rules/<id>.json → features/<id>_scatter.json →
+   * features/<id>_placed.json (one placed feature per supported placement; several placements are
+   * combined with a minecraft:aggregate_feature). Feature identifiers match their file names, as
+   * Bedrock requires. Placement types that can't be expressed from a spread (e.g. trees) are skipped
+   * with a warning instead of emitting a scatter feature that points at a missing feature.
+   */
   private _generateFeatureFromSpread(feature: IFeatureDefinition, result: IGeneratedContent): void {
     const safeId = ContentGenerator._sanitizeIdForPath(feature.id);
     const spread = feature.spread!;
-    const featureId = `${this._namespace}:${feature.id}`;
+    const ns = this._namespace;
 
-    // Create scatter feature for placement
-    const scatterFeature: any = {
-      format_version: "1.13.0",
-      "minecraft:scatter_feature": {
-        description: { identifier: featureId },
-        iterations: typeof spread.count === "number" ? spread.count : spread.count?.max || 1,
-        scatter_chance: spread.rarity ? { numerator: 1, denominator: spread.rarity } : 100.0,
-        x: { distribution: "uniform", extent: [0, 16] },
-        z: { distribution: "uniform", extent: [0, 16] },
-        y: this._buildHeightPlacement(spread.heightPlacement),
-        places_feature: `${this._namespace}:${feature.id}_placed`,
-      },
-    };
-
-    result.features.push({
-      path: `features/${safeId}_scatter.json`,
-      pack: "behavior",
-      type: "json",
-      content: scatterFeature,
-    });
-
-    // Create the actual placement feature(s)
-    for (const placement of spread.places) {
-      if (placement.type === "ore") {
-        const oreFeature: any = {
-          format_version: "1.13.0",
-          "minecraft:ore_feature": {
-            description: { identifier: `${this._namespace}:${feature.id}_placed` },
-            count: typeof placement.count === "number" ? placement.count : placement.count?.max || 8,
-            replace_rules: [
-              {
-                places_block: placement.id.includes(":") ? placement.id : `${this._namespace}:${placement.id}`,
-                may_replace: (placement.replacesBlocks || ["stone"]).map((b) =>
-                  b.includes(":") ? b : `minecraft:${b}`
-                ),
-              },
-            ],
-          },
-        };
-
-        result.features.push({
-          path: `features/${safeId}_placed.json`,
-          pack: "behavior",
-          type: "json",
-          content: oreFeature,
-        });
+    const supported: IFeaturePlacement[] = [];
+    for (const placement of spread.places || []) {
+      if (SUPPORTED_SPREAD_PLACEMENT_TYPES.includes(placement.type)) {
+        supported.push(placement);
+      } else {
+        this._warnings.push(
+          `Feature '${feature.id}': placement type '${placement.type}' (${placement.id}) is not supported by 'spread' ` +
+            `and was skipped. Use nativeFeature/nativeFeatureRule (e.g. minecraft:tree_feature) instead.`
+        );
       }
     }
 
-    // Create feature rule
+    if (supported.length === 0) {
+      this._warnings.push(
+        `Feature '${feature.id}': no supported placements (${SUPPORTED_SPREAD_PLACEMENT_TYPES.join(", ")}); ` +
+          `no feature files were generated.`
+      );
+      return;
+    }
+
+    const heightPlacement: IHeightPlacement = spread.heightPlacement ?? {
+      type: supported.some((p) => p.type === "ore") ? "underground" : "surface",
+    };
+    const isSurface = heightPlacement.type === "surface";
+
+    // Placed features
+    const placedFeatureIds: string[] = [];
+    supported.forEach((placement, index) => {
+      const name = supported.length === 1 ? `${safeId}_placed` : `${safeId}_placed_${index + 1}`;
+      const identifier = `${ns}:${name}`;
+      result.features.push({
+        path: `features/${name}.json`,
+        pack: "behavior",
+        type: "json",
+        content: this._buildPlacedFeature(feature.id, placement, identifier, isSurface),
+      });
+      placedFeatureIds.push(identifier);
+    });
+
+    let placedFeatureId = placedFeatureIds[0];
+    if (placedFeatureIds.length > 1) {
+      const name = `${safeId}_placed`;
+      placedFeatureId = `${ns}:${name}`;
+      result.features.push({
+        path: `features/${name}.json`,
+        pack: "behavior",
+        type: "json",
+        content: {
+          format_version: "1.13.0",
+          "minecraft:aggregate_feature": {
+            description: { identifier: placedFeatureId },
+            features: placedFeatureIds,
+          },
+        },
+      });
+    }
+
+    // Scatter feature (current layout: scatter params live under "distribution")
+    const pattern = this._buildScatterPattern(spread.scatter);
+    const distribution: Record<string, any> = {
+      iterations: this._buildScatterIterations(spread.count),
+    };
+    if (spread.rarity !== undefined && spread.rarity > 1) {
+      distribution.scatter_chance = { numerator: 1, denominator: Math.round(spread.rarity) };
+    }
+    if (isSurface) {
+      // y reads v.worldx/v.worldz, so it must be evaluated after x and z.
+      distribution.coordinate_eval_order = "xzy";
+    }
+    distribution.x = pattern.x;
+    distribution.y = this._buildHeightPlacement(heightPlacement);
+    distribution.z = pattern.z;
+
+    const scatterName = `${safeId}_scatter`;
+    result.features.push({
+      path: `features/${scatterName}.json`,
+      pack: "behavior",
+      type: "json",
+      content: {
+        format_version: "1.21.20",
+        "minecraft:scatter_feature": {
+          description: { identifier: `${ns}:${scatterName}` },
+          places_feature: placedFeatureId,
+          distribution,
+        },
+      },
+    });
+
+    // Feature rule: runs once per chunk from the chunk origin (or a random cluster/line origin).
     const featureRule: any = {
       format_version: "1.13.0",
       "minecraft:feature_rules": {
-        description: { identifier: `${this._namespace}:${feature.id}_rule`, places_feature: featureId },
+        description: { identifier: `${ns}:${safeId}`, places_feature: `${ns}:${scatterName}` },
         conditions: {
-          placement_pass: "underground_pass",
+          placement_pass: isSurface ? "surface_pass" : "underground_pass",
           "minecraft:biome_filter": spread.biomes
             ? { any_of: spread.biomes.map((b) => ({ test: "has_biome_tag", value: b })) }
             : { test: "has_biome_tag", value: "overworld" },
         },
         distribution: {
           iterations: 1,
-          x: 0,
+          x: pattern.originX,
           y: 0,
-          z: 0,
+          z: pattern.originZ,
         },
       },
     };
@@ -3471,20 +3671,139 @@ export class ContentGenerator {
     });
   }
 
-  private _buildHeightPlacement(placement?: { type: string; y?: number; min?: number; max?: number }): any {
+  private _buildPlacedFeature(
+    featureId: string,
+    placement: IFeaturePlacement,
+    identifier: string,
+    isSurface: boolean
+  ): object {
+    const toMinecraftId = (b: string) => (b.includes(":") ? b : `minecraft:${b}`);
+    const placedId = placement.id.includes(":") ? placement.id : `${this._namespace}:${placement.id}`;
+
+    switch (placement.type) {
+      case "ore": {
+        let veinSize = 8;
+        if (typeof placement.count === "number") {
+          veinSize = placement.count;
+        } else if (placement.count) {
+          // minecraft:ore_feature.count is a fixed integer, so a range collapses to its midpoint.
+          veinSize = Math.round((placement.count.min + placement.count.max) / 2);
+          this._warnings.push(
+            `Feature '${featureId}': ore vein size range ${placement.count.min}-${placement.count.max} ` +
+              `was emitted as a fixed count of ${Math.max(1, veinSize)} (minecraft:ore_feature has no range support).`
+          );
+        }
+
+        return {
+          format_version: "1.13.0",
+          "minecraft:ore_feature": {
+            description: { identifier },
+            count: Math.max(1, veinSize),
+            replace_rules: [
+              {
+                places_block: placedId,
+                may_replace: (placement.replacesBlocks || ["stone"]).map(toMinecraftId),
+              },
+            ],
+          },
+        };
+      }
+
+      case "structure": {
+        const replaceable = (placement.replacesBlocks || ["air"]).map(toMinecraftId);
+        return {
+          format_version: "1.13.0",
+          "minecraft:structure_template_feature": {
+            description: { identifier },
+            // Bare names map to BP/structures/<name>.mcstructure, which Bedrock registers as mystructure:<name>.
+            structure_name: placement.id.includes(":") ? placement.id : `mystructure:${placement.id}`,
+            adjustment_radius: 4,
+            facing_direction: "random",
+            constraints: isSurface
+              ? { grounded: {}, unburied: {}, block_intersection: { block_allowlist: replaceable } }
+              : { block_intersection: { block_allowlist: replaceable } },
+          },
+        };
+      }
+
+      default: {
+        // "block" and "vegetation" place a single block.
+        const singleBlock: Record<string, any> = {
+          description: { identifier },
+          // The weighted-list form (1.21.30+) is what the current feature schema accepts.
+          places_block: [{ block: placedId, weight: 1 }],
+          enforce_placement_rules: true,
+          enforce_survivability_rules: true,
+          may_replace: (placement.replacesBlocks || ["air"]).map(toMinecraftId),
+        };
+        if (placement.type === "vegetation") {
+          singleBlock.may_attach_to = { min_sides_must_attach: 1, bottom: VEGETATION_SOIL_BLOCKS };
+        }
+        return {
+          format_version: "1.21.40",
+          "minecraft:single_block_feature": singleBlock,
+        };
+      }
+    }
+  }
+
+  /** Placement attempts per chunk; a {min,max} range is randomized per chunk with Molang. */
+  private _buildScatterIterations(count?: number | { min: number; max: number }): number | string {
+    if (count === undefined) {
+      return 1;
+    }
+    if (typeof count === "number") {
+      return count;
+    }
+    const min = Math.min(count.min, count.max);
+    const max = Math.max(count.min, count.max);
+    return min === max ? min : `math.random_integer(${min}, ${max})`;
+  }
+
+  /**
+   * Horizontal distribution. The feature rule supplies the origin, the scatter feature offsets from it:
+   * - uniform (default): anywhere in the chunk ([0, 15] on x/z)
+   * - cluster: a random center (kept inside the chunk) with gaussian offsets of ±radius (default 4)
+   * - line: a random row along x, with placements stepping one block at a time up to 2*radius (default 8)
+   */
+  private _buildScatterPattern(scatter?: IScatterPattern): { originX: any; originZ: any; x: any; z: any } {
+    const chunkExtent = { distribution: "uniform", extent: [0, 15] };
+
+    switch (scatter?.type) {
+      case "cluster": {
+        const radius = Math.min(7, Math.max(1, Math.round(scatter.radius ?? 4)));
+        const center = { distribution: "uniform", extent: [radius, 15 - radius] };
+        const offset = { distribution: "gaussian", extent: [-radius, radius] };
+        return { originX: center, originZ: center, x: offset, z: offset };
+      }
+      case "line": {
+        const length = Math.min(15, Math.max(1, Math.round((scatter.radius ?? 4) * 2)));
+        return {
+          originX: 0,
+          originZ: chunkExtent,
+          x: { distribution: "fixed_grid", extent: [0, length] },
+          z: 0,
+        };
+      }
+      default:
+        return { originX: 0, originZ: 0, x: chunkExtent, z: chunkExtent };
+    }
+  }
+
+  private _buildHeightPlacement(placement?: IHeightPlacement): number | string | object {
     if (!placement) {
       return { distribution: "uniform", extent: [0, 64] };
     }
 
     switch (placement.type) {
       case "fixed":
-        return placement.y || 64;
+        return placement.y ?? 64;
       case "surface":
         return "q.heightmap(v.worldx, v.worldz)";
       case "underground":
-        return { distribution: "uniform", extent: [placement.min || 0, placement.max || 64] };
+        return { distribution: "uniform", extent: [placement.min ?? 0, placement.max ?? 64] };
       case "range":
-        return { distribution: "uniform", extent: [placement.min || 0, placement.max || 256] };
+        return { distribution: "uniform", extent: [placement.min ?? 0, placement.max ?? 256] };
       default:
         return { distribution: "uniform", extent: [0, 64] };
     }

@@ -18,6 +18,13 @@
         "slot": "sword"
       },
       "minecraft:can_destroy_in_creative": false,
+      "minecraft:tags": {
+        "tags": [
+          "minecraft:is_sword",
+          "minecraft:is_tool",
+          "minecraft:iron_tier"
+        ]
+      },
       "minecraft:glint": true,
       "minecraft:icon": "test:flame_sword",
       "minecraft:display_name": {

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { ItemContentTrait, IItemTraitData, ITraitConfig } from "./ContentTraits";
+import { buildToolTagsComponent, getToolTier } from "./ToolTiers";
 
 /**
  * Sword - melee weapon.
@@ -14,6 +15,7 @@ export class SwordItemTrait extends ItemContentTrait {
   getData(config?: ITraitConfig): IItemTraitData {
     const damage = config?.damage ?? 5;
     const durability = config?.durability ?? 250;
+    const tier = getToolTier(config?.miningLevel);
 
     return {
       id: "sword",
@@ -33,6 +35,7 @@ export class SwordItemTrait extends ItemContentTrait {
           slot: "sword",
         },
         "minecraft:can_destroy_in_creative": false,
+        "minecraft:tags": buildToolTagsComponent("minecraft:is_sword", tier, false),
       },
     };
   }

@@ -2,9 +2,12 @@
 // Licensed under the MIT License.
 
 import { ItemContentTrait, IItemTraitData, ITraitConfig } from "./ContentTraits";
+import { buildDiggerComponent, buildToolTagsComponent, getToolMiningSpeed, getToolTier } from "./ToolTiers";
 
 /**
  * Axe - chopping tool.
+ *
+ * Config: miningLevel (wood|stone|iron|diamond|netherite, default iron), miningSpeed, durability.
  */
 export class AxeItemTrait extends ItemContentTrait {
   get id(): string {
@@ -12,7 +15,8 @@ export class AxeItemTrait extends ItemContentTrait {
   }
 
   getData(config?: ITraitConfig): IItemTraitData {
-    const miningSpeed = config?.miningSpeed ?? 1.2;
+    const tier = getToolTier(config?.miningLevel);
+    const miningSpeed = getToolMiningSpeed(config?.miningSpeed, tier);
     const durability = config?.durability ?? 250;
 
     return {
@@ -25,19 +29,12 @@ export class AxeItemTrait extends ItemContentTrait {
           max_durability: durability,
         },
         "minecraft:hand_equipped": true,
-        "minecraft:digger": {
-          use_efficiency: true,
-          destroy_speeds: [
-            {
-              block: { tags: "q.any_tag('wood', 'log')" },
-              speed: miningSpeed,
-            },
-          ],
-        },
+        "minecraft:digger": buildDiggerComponent("minecraft:is_axe_item_destructible", miningSpeed),
         "minecraft:enchantable": {
           value: 10,
           slot: "axe",
         },
+        "minecraft:tags": buildToolTagsComponent("minecraft:is_axe", tier, true),
       },
     };
   }
