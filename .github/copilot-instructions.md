@@ -44,6 +44,8 @@ Tests are added either in `app/src/test/CartoTest.ts`, or added into `app/src/te
 
 The `app/src/test/` folder is used for unit tests, while the `app/test/` folder is used for integration tests that compare built outputs (`app/test/results`) against expected outputs (`app/test/scenarios`).
 
+To run a single test file quickly (from `app/`): `npx ts-mocha --type-check -p tsconfig.test.json src/test/<Name>Test.ts`. Test files that rely on `CreatorToolsHost` (UUIDs, PNG codecs), including anything that calls `ContentGenerator.generate()`, should call `await TestPaths.createTestEnvironment()` in a `before()` hook so they also pass when run on their own. When an intended output change breaks a `app/test/scenarios` baseline, review the diff against `app/test/results` and then copy the new result over the scenario file.
+
 There is some sample content in the `samplecontent` folder, which can be used to test the command line tool. The `samplecontent/addon` folder contains a sample addon that can be used to test the command line tool.
 
 Please add more canonical Minecraft Bedrock Edition content to the `samplecontent/` folder as you find it, so that it can be used to test the command line tool.

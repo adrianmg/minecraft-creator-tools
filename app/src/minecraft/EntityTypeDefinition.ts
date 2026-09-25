@@ -804,7 +804,8 @@ export default class EntityTypeDefinition implements IManagedComponentSetItem, I
         Log.error("EntityTypeDefinition.applyTraitChanges: unknown trait id '" + traitId + "' (add)");
         continue;
       }
-      this._addTraitData(trait.getData());
+      // Traits such as breedable reference the entity's own identifier.
+      this._addTraitData(trait.getData(this.id ? { entityId: this.id } : undefined));
     }
   }
 

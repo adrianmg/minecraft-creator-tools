@@ -296,7 +296,7 @@ export interface IDropDefinition {
   /** Stack size */
   count?: number | { min: number; max: number };
 
-  /** Only drop if killed by player */
+  /** Only drop if killed by player (entity drops only; ignored with a warning for blocks) */
   killedByPlayer?: boolean;
 
   /** Looting enchantment bonus per level */
@@ -358,7 +358,10 @@ export interface ISpawnConfig {
   /** Y level range */
   heightRange?: { min?: number; max?: number };
 
-  /** Time of day */
+  /**
+   * Time of day. Mapped to a brightness filter like vanilla mobs ("night" = light 0-7,
+   * "day" = light 7-15); bounds set in `lightLevel` take precedence.
+   */
   timeOfDay?: "day" | "night" | "any";
 
   /** Surface or underground */
@@ -432,23 +435,26 @@ export interface IEntityTypeDefinition {
   /** Entity families */
   families?: string[];
 
-  /** Is this entity hostile to players? */
+  /** Is this entity hostile to players? Counts it against the "monster" spawn cap. */
   hostile?: boolean;
 
-  /** Can this entity be tamed? */
+  /** Can this entity be tamed? `true` or a config applies the "tameable" trait. */
   tameable?: boolean | ITameableConfig;
 
-  /** Can this entity be ridden? */
+  /** Can this entity be ridden? `true` or a config applies the "rideable" trait. */
   rideable?: boolean | IRideableConfig;
 
-  /** Can this entity be bred? */
+  /** Can this entity be bred? `true` or a config applies the "breedable" trait. */
   breedable?: boolean | IBreedableConfig;
 
   // ============ NATIVE COMPONENTS (FULL CONTROL) ============
 
   /**
    * Native Minecraft components - uses actual Minecraft component schema.
-   * These OVERRIDE any components set by traits or simplified properties.
+   * These OVERRIDE any components set by traits or simplified properties. When a trait
+   * component group redefines a targeting component that has `entity_types` (for example
+   * `minecraft:behavior.nearest_attackable_target`), these values are merged into it and the
+   * `entity_types` lists are combined, so user targets stay in effect after the group is added.
    * Key format: component name without "minecraft:" prefix.
    */
   components?: Record<string, unknown>;
@@ -1232,7 +1238,7 @@ export interface ISpawnRuleDefinition {
   /** Y level range */
   heightRange?: { min?: number; max?: number };
 
-  /** Time of day */
+  /** Time of day. Mapped to a brightness filter ("night" = light 0-7, "day" = light 7-15). */
   timeOfDay?: "day" | "night" | "any";
 
   /** Surface or underground */

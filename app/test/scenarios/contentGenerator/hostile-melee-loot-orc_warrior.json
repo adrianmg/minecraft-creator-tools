@@ -7,7 +7,18 @@
           "type": "item",
           "name": "minecraft:iron_sword",
           "weight": 1
-        },
+        }
+      ],
+      "conditions": [
+        {
+          "condition": "random_chance",
+          "chance": 0.1
+        }
+      ]
+    },
+    {
+      "rolls": 1,
+      "entries": [
         {
           "type": "item",
           "name": "test:orc_tooth",

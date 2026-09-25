@@ -239,10 +239,13 @@ export const DropSchema = z
       .union([z.number().int(), z.object({ min: z.number().int(), max: z.number().int() })])
       .optional()
       .describe("Stack size - number or {min, max} range"),
-    killedByPlayer: z.boolean().optional().describe("Only drop if killed by player"),
+    killedByPlayer: z.boolean().optional().describe("Only drop if killed by player (entity drops only)"),
     lootingBonus: z.number().optional().describe("Bonus items per looting level"),
   })
-  .describe("What drops when entity is killed or block is mined");
+  .describe(
+    "What drops when entity is killed or block is mined. Each drop is rolled independently in its own loot pool; " +
+      "chance < 1 adds a random_chance condition and killedByPlayer adds a killed_by_player condition."
+  );
 
 /**
  * Entity appearance.
@@ -337,7 +340,13 @@ export const SpawnConfigSchema = z
       .optional()
       .describe("Light level range (0-15)"),
     heightRange: z.object({ min: z.number(), max: z.number() }).optional().describe("Y level range"),
-    timeOfDay: z.enum(["day", "night", "any"]).optional().describe("When to spawn"),
+    timeOfDay: z
+      .enum(["day", "night", "any"])
+      .optional()
+      .describe(
+        "When to spawn. Spawn rules have no time condition, so like vanilla mobs this maps to a brightness filter: " +
+          "'night' = light 0-7 (adjusted for weather), 'day' = light 7-15. Bounds set in lightLevel take precedence."
+      ),
     surface: z.boolean().optional().describe("Surface or underground"),
     spawnOn: z.array(z.string()).optional().describe("Block types to spawn on"),
     populationCap: z.number().int().optional().describe("Max population in area"),
@@ -346,7 +355,9 @@ export const SpawnConfigSchema = z
   .describe(
     "Inline spawn configuration for an entity. Use this as `entity.spawning` when the spawn rule belongs " +
       "to a single custom entity. For spawn rules that reference external entities or that you want as " +
-      "separate files, use the top-level `spawnRules[]` (SpawnRuleSchema) instead."
+      "separate files, use the top-level `spawnRules[]` (SpawnRuleSchema) instead. The rule's population_control " +
+      "is derived from the entity: 'monster' for hostile/undead/illager/exploder traits, hostile: true, or a " +
+      "'monster' family; 'water_animal' for aquatic traits; otherwise 'animal'."
   );
 
 /**
@@ -386,13 +397,34 @@ export const EntityTypeSchema = z
     appearance: EntityAppearanceSchema.optional().describe("Appearance specification"),
     families: z.array(z.string()).optional().describe("Entity type families"),
 
-    hostile: z.boolean().optional().describe("Is hostile to players?"),
-    tameable: z.union([z.boolean(), TameableConfigSchema]).optional().describe("Can be tamed"),
-    rideable: z.union([z.boolean(), RideableConfigSchema]).optional().describe("Can be ridden"),
-    breedable: z.union([z.boolean(), BreedableConfigSchema]).optional().describe("Can be bred"),
+    hostile: z
+      .boolean()
+      .optional()
+      .describe(
+        "Is hostile to players? Counts the entity against the 'monster' spawn cap. Use the 'hostile' trait for attack AI."
+      ),
+    tameable: z
+      .union([z.boolean(), TameableConfigSchema])
+      .optional()
+      .describe("Can be tamed. true or a config object applies the 'tameable' trait; config sets tame items/chance."),
+    rideable: z
+      .union([z.boolean(), RideableConfigSchema])
+      .optional()
+      .describe("Can be ridden. true or a config object applies the 'rideable' trait; config sets seats/controls."),
+    breedable: z
+      .union([z.boolean(), BreedableConfigSchema])
+      .optional()
+      .describe("Can be bred. true or a config object applies the 'breedable' trait; config sets items/cooldown."),
 
     // Native components (full control)
-    components: z.record(z.any()).optional().describe("Native Minecraft components (override traits)"),
+    components: z
+      .record(z.any())
+      .optional()
+      .describe(
+        "Native Minecraft components (override traits). When a trait's component group (e.g. hostile_angry) " +
+          "redefines a targeting component with entity_types (e.g. behavior.nearest_attackable_target), your " +
+          "fields are merged into it and the entity_types targets are combined."
+      ),
     componentGroups: z.record(z.record(z.any())).optional().describe("Component groups for conditions"),
     events: z.record(z.any()).optional().describe("Events for component group changes"),
 
@@ -1010,7 +1042,10 @@ export const SpawnRuleSchema = z
     groupSize: z.object({ min: z.number().int(), max: z.number().int() }).optional(),
     lightLevel: z.object({ min: z.number().int().optional(), max: z.number().int().optional() }).optional(),
     heightRange: z.object({ min: z.number().optional(), max: z.number().optional() }).optional(),
-    timeOfDay: z.enum(["day", "night", "any"]).optional(),
+    timeOfDay: z
+      .enum(["day", "night", "any"])
+      .optional()
+      .describe("When to spawn; mapped to a brightness filter ('night' = light 0-7, 'day' = light 7-15)."),
     surface: z.boolean().optional(),
     spawnOn: z.array(z.string()).optional(),
     populationCap: z.number().int().optional(),

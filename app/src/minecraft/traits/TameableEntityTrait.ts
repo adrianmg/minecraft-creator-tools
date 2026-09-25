@@ -5,6 +5,10 @@ import { EntityContentTrait, IEntityTraitData, ITraitConfig } from "./ContentTra
 
 /**
  * Tameable - can be tamed by the player.
+ *
+ * Config:
+ * - `tameItems`: items that can tame the entity. Default: ["bone"].
+ * - `tameChance`: probability (0-1) that each attempt succeeds. Default: 0.33.
  */
 export class TameableEntityTrait extends EntityContentTrait {
   get id(): string {

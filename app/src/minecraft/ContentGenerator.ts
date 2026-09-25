@@ -33,6 +33,9 @@ import {
   ItemTraitId,
   IDropDefinition,
   ISpawnConfig,
+  ITameableConfig,
+  IRideableConfig,
+  IBreedableConfig,
   EntityBehaviorPreset,
   IGenerationOptions,
   ITextureSpec,
@@ -42,7 +45,13 @@ import CreatorToolsHost from "../app/CreatorToolsHost";
 import ImageCodec from "../core/ImageCodec";
 import PngEncoder from "./PngEncoder";
 import { generateItemTextureFromTemplate } from "./ItemTextureTemplates";
-import { TraitRegistry, registerAllEntityTraits, registerAllBlockTraits, registerAllItemTraits } from "./traits";
+import {
+  TraitRegistry,
+  ITraitConfig,
+  registerAllEntityTraits,
+  registerAllBlockTraits,
+  registerAllItemTraits,
+} from "./traits";
 import ModelDesignUtilities from "./ModelDesignUtilities";
 import TexturedRectangleGenerator from "./TexturedRectangleGenerator";
 import { applyTextureEffects } from "./TextureEffects";
@@ -758,8 +767,9 @@ export class ContentGenerator {
     // Validate entity traits
     if (this._definition.entityTypes) {
       for (const entity of this._definition.entityTypes) {
-        if (entity.traits && entity.traits.length > 1) {
-          this._validateEntityTraits(entity.id, entity.traits);
+        const traits = ContentGenerator._getEffectiveEntityTraits(entity);
+        if (traits.length > 1) {
+          this._validateEntityTraits(entity.id, traits);
         }
       }
     }
@@ -1298,16 +1308,14 @@ export class ContentGenerator {
     let spawnEvent: any = undefined;
 
     // Apply traits using the new trait system
-    if (entity.traits) {
-      for (const traitId of entity.traits) {
+    const traits = ContentGenerator._getEffectiveEntityTraits(entity);
+    if (traits.length > 0) {
+      const traitConfig = ContentGenerator._buildEntityTraitConfig(entity, fullId);
+      for (const traitId of traits) {
         // First try the new registry-based traits
         const trait = TraitRegistry.getEntityTrait(traitId);
         if (trait) {
-          const traitData = trait.getData({
-            attackDamage: entity.attackDamage,
-            tameItems: (entity as any).tameItems,
-            tameChance: (entity as any).tameChance,
-          });
+          const traitData = trait.getData(traitConfig);
 
           // Merge components
           if (traitData.components) {
@@ -1394,6 +1402,13 @@ export class ContentGenerator {
     if (entity.components) {
       components = { ...components, ...entity.components };
     }
+
+    // Trait component groups (e.g. hostile_angry) are added at spawn and would otherwise
+    // replace a same-named targeting component the user asked for, dropping their targets.
+    ContentGenerator._mergeUserTargetsIntoTraitGroups(
+      componentGroups,
+      ContentGenerator._getUserSpecifiedEntityComponents(entity)
+    );
 
     // Generate behavior pack entity
     const behaviorEntity: any = {
@@ -1510,9 +1525,138 @@ export class ContentGenerator {
 
     // Generate spawn rule if specified
     if (entity.spawning) {
-      const spawnRule = this._generateSpawnRuleFromConfig(entity.id, fullId, entity.spawning);
+      const spawnRule = this._generateSpawnRuleFromConfig(entity.id, fullId, entity.spawning, entity);
       result.spawnRules.push(spawnRule);
     }
+  }
+
+  /**
+   * Returns `entity.traits` plus any traits implied by the `tameable`, `rideable`,
+   * and `breedable` shorthand fields (either `true` or a config object).
+   */
+  private static _getEffectiveEntityTraits(entity: IEntityTypeDefinition): EntityTraitId[] {
+    const traits: EntityTraitId[] = [...(entity.traits ?? [])];
+    const shorthands: [EntityTraitId, unknown][] = [
+      ["tameable", entity.tameable],
+      ["rideable", entity.rideable],
+      ["breedable", entity.breedable],
+    ];
+
+    for (const [traitId, value] of shorthands) {
+      if (value && !traits.includes(traitId)) {
+        traits.push(traitId);
+      }
+    }
+
+    return traits;
+  }
+
+  /**
+   * Builds the config passed to each entity trait's getData() from the entity definition.
+   */
+  private static _buildEntityTraitConfig(entity: IEntityTypeDefinition, fullId: string): ITraitConfig {
+    const tameable: Partial<ITameableConfig> = typeof entity.tameable === "object" ? entity.tameable : {};
+    const rideable: IRideableConfig = typeof entity.rideable === "object" ? entity.rideable : {};
+    const breedable: Partial<IBreedableConfig> = typeof entity.breedable === "object" ? entity.breedable : {};
+    // Pre-schema definitions put tameItems/tameChance at the top level of the entity.
+    const legacy = entity as { tameItems?: string[]; tameChance?: number };
+
+    return {
+      entityId: fullId,
+      attackDamage: entity.attackDamage,
+      tameItems: tameable.tameItems ?? legacy.tameItems,
+      tameChance: tameable.chance ?? legacy.tameChance,
+      seatCount: rideable.seatCount,
+      controllable: rideable.controllable,
+      controlItems: rideable.controlItems,
+      breedItems: breedable.breedItems,
+      breedCooldown: breedable.breedCooldown,
+    };
+  }
+
+  /**
+   * Components the user explicitly asked for, via behavior presets or native components
+   * (native components win over presets, matching how the base components are assembled).
+   */
+  private static _getUserSpecifiedEntityComponents(entity: IEntityTypeDefinition): Record<string, any> {
+    const userComponents: Record<string, any> = {};
+
+    for (const behavior of entity.behaviors ?? []) {
+      const behaviorComponents = BEHAVIOR_PRESET_COMPONENTS[behavior];
+      if (behaviorComponents) {
+        Object.assign(userComponents, behaviorComponents);
+      }
+    }
+
+    if (entity.components) {
+      Object.assign(userComponents, entity.components);
+    }
+
+    return userComponents;
+  }
+
+  /**
+   * For each trait-provided component group that redefines a targeting component the user
+   * specified (both define `entity_types`, e.g. `behavior.nearest_attackable_target` or
+   * `behavior.avoid_mob_type`), merges the user's value over the trait's (user fields win)
+   * and unions the `entity_types` lists so user targets stay in effect alongside the trait's.
+   * Other components are left alone: traits such as baby_variant and boss deliberately use
+   * different values per group (scale, movement), which a single base value must not flatten.
+   */
+  private static _mergeUserTargetsIntoTraitGroups(
+    traitGroups: Record<string, Record<string, any>>,
+    userComponents: Record<string, any>
+  ): void {
+    const isPlainObject = (v: any) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+    for (const group of Object.values(traitGroups)) {
+      if (!isPlainObject(group)) {
+        continue;
+      }
+
+      for (const key of Object.keys(group)) {
+        const traitValue = group[key];
+        const userValue = userComponents[key];
+        if (
+          !Object.prototype.hasOwnProperty.call(userComponents, key) ||
+          !isPlainObject(traitValue) ||
+          !isPlainObject(userValue) ||
+          traitValue.entity_types === undefined ||
+          userValue.entity_types === undefined
+        ) {
+          continue;
+        }
+
+        group[key] = {
+          ...traitValue,
+          ...JSON.parse(JSON.stringify(userValue)),
+          entity_types: ContentGenerator._mergeEntityTypes(traitValue.entity_types, userValue.entity_types),
+        };
+      }
+    }
+  }
+
+  /**
+   * Unions two `entity_types` lists (each may be a single object or an array).
+   * Entries with identical `filters` are combined, with the user's fields winning.
+   */
+  private static _mergeEntityTypes(traitEntityTypes: any, userEntityTypes: any): any[] {
+    const toArray = (v: any): any[] => (Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]);
+    const filterKey = (entry: any) => JSON.stringify(entry?.filters ?? null);
+
+    const merged: any[] = toArray(traitEntityTypes).map((entry) => JSON.parse(JSON.stringify(entry)));
+
+    for (const userEntry of toArray(userEntityTypes)) {
+      const userCopy = JSON.parse(JSON.stringify(userEntry));
+      const matchIndex = merged.findIndex((entry) => filterKey(entry) === filterKey(userEntry));
+      if (matchIndex >= 0) {
+        merged[matchIndex] = { ...merged[matchIndex], ...userCopy };
+      } else {
+        merged.push(userCopy);
+      }
+    }
+
+    return merged;
   }
 
   // ============================================================================
@@ -2872,6 +3016,7 @@ export class ContentGenerator {
           name: entry.item.includes(":") ? entry.item : `minecraft:${entry.item}`,
           weight: entry.weight || 1,
           functions: this._buildLootFunctions(entry),
+          conditions: ContentGenerator._buildDropConditions(entry, true),
         })),
         conditions: pool.conditions?.map((c) => this._buildLootCondition(c)),
       })),
@@ -2885,6 +3030,13 @@ export class ContentGenerator {
     });
   }
 
+  /**
+   * Converts simplified drops into a native loot table. Each drop gets its own pool so drops
+   * are rolled independently (a single weighted pool would only ever yield one of them), and
+   * per-drop `chance` / `killedByPlayer` become pool conditions, matching vanilla loot tables.
+   * `killedByPlayer` is only honored for entity loot: block loot has no killer, so a
+   * `killed_by_player` condition would prevent the drop entirely.
+   */
   private _generateLootTableFromDrops(
     id: string,
     drops: IDropDefinition[],
@@ -2892,29 +3044,68 @@ export class ContentGenerator {
   ): IGeneratedFile {
     const safeId = ContentGenerator._sanitizeIdForPath(id);
     const safeFolder = ContentGenerator._sanitizeIdForPath(folder);
-    const entries = drops.map((drop) => ({
-      type: "item",
-      name: drop.item.includes(":") ? drop.item : `minecraft:${drop.item}`,
-      weight: 1,
-      functions: this._buildLootFunctions({
+    const allowKilledByPlayer = folder === "entities";
+
+    const pools = drops.map((drop) => {
+      if (drop.killedByPlayer && !allowKilledByPlayer) {
+        this._warnings.push(
+          `'${id}': drop '${drop.item}' sets killedByPlayer, which only applies to entity loot and was ignored.`
+        );
+      }
+
+      const entry: Record<string, any> = {
+        type: "item",
+        name: drop.item.includes(":") ? drop.item : `minecraft:${drop.item}`,
+        weight: 1,
+      };
+
+      const functions = this._buildLootFunctions({
         count: drop.count,
         lootingBonus: drop.lootingBonus,
-      }),
-    }));
+      });
+      if (functions) {
+        entry.functions = functions;
+      }
+
+      const pool: Record<string, any> = {
+        rolls: 1,
+        entries: [entry],
+      };
+
+      const conditions = ContentGenerator._buildDropConditions(drop, allowKilledByPlayer);
+      if (conditions) {
+        pool.conditions = conditions;
+      }
+
+      return pool;
+    });
 
     return {
       path: `loot_tables/${safeFolder}/${safeId}.json`,
       pack: "behavior",
       type: "json",
-      content: {
-        pools: [
-          {
-            rolls: 1,
-            entries,
-          },
-        ],
-      },
+      content: { pools },
     };
+  }
+
+  /**
+   * Builds loot conditions for a drop's `killedByPlayer` and `chance` (omitted when chance >= 1).
+   */
+  private static _buildDropConditions(
+    drop: { chance?: number; killedByPlayer?: boolean },
+    allowKilledByPlayer: boolean
+  ): ILootCondition[] | undefined {
+    const conditions: ILootCondition[] = [];
+
+    if (drop.killedByPlayer && allowKilledByPlayer) {
+      conditions.push({ condition: "killed_by_player" });
+    }
+
+    if (typeof drop.chance === "number" && drop.chance < 1) {
+      conditions.push({ condition: "random_chance", chance: Math.max(0, drop.chance) });
+    }
+
+    return conditions.length > 0 ? conditions : undefined;
   }
 
   private _buildLootFunctions(entry: {
@@ -3034,13 +3225,14 @@ export class ContentGenerator {
 
   private _generateSpawnRule(spawnRule: ISpawnRuleDefinition, result: IGeneratedContent): void {
     const entityId = spawnRule.entity.includes(":") ? spawnRule.entity : `${this._namespace}:${spawnRule.entity}`;
+    const localEntity = this._definition.entityTypes?.find((e) => `${this._namespace}:${e.id}` === entityId);
 
     const nativeSpawnRule: any = {
       format_version: "1.8.0",
       "minecraft:spawn_rules": {
         description: {
           identifier: entityId,
-          population_control: "animal",
+          population_control: ContentGenerator._getPopulationControl(localEntity),
         },
         conditions: [this._buildSpawnConditions(spawnRule)],
       },
@@ -3054,13 +3246,18 @@ export class ContentGenerator {
     });
   }
 
-  private _generateSpawnRuleFromConfig(id: string, fullId: string, config: ISpawnConfig): IGeneratedFile {
+  private _generateSpawnRuleFromConfig(
+    id: string,
+    fullId: string,
+    config: ISpawnConfig,
+    entity?: IEntityTypeDefinition
+  ): IGeneratedFile {
     const nativeSpawnRule: any = {
       format_version: "1.8.0",
       "minecraft:spawn_rules": {
         description: {
           identifier: fullId,
-          population_control: "animal",
+          population_control: ContentGenerator._getPopulationControl(entity),
         },
         conditions: [this._buildSpawnConditions(config as any)],
       },
@@ -3072,6 +3269,33 @@ export class ContentGenerator {
       type: "json",
       content: nativeSpawnRule,
     };
+  }
+
+  /**
+   * Picks the spawn-rule population pool (which mob cap the entity counts against).
+   * Hostile-type entities use "monster" even when aquatic (like drowned/guardians),
+   * aquatic entities use "water_animal", and everything else (or an unknown entity) is "animal".
+   */
+  private static _getPopulationControl(entity?: IEntityTypeDefinition): "monster" | "water_animal" | "animal" {
+    if (!entity) {
+      return "animal";
+    }
+
+    const traits = new Set<string>(ContentGenerator._getEffectiveEntityTraits(entity));
+    const isMonster =
+      entity.hostile === true ||
+      ["hostile", "undead", "illager", "exploder"].some((t) => traits.has(t)) ||
+      (entity.families ?? []).includes("monster");
+
+    if (isMonster) {
+      return "monster";
+    }
+
+    if (traits.has("aquatic") || traits.has("aquatic_only")) {
+      return "water_animal";
+    }
+
+    return "animal";
   }
 
   private _buildSpawnConditions(config: ISpawnRuleDefinition | ISpawnConfig): any {
@@ -3096,11 +3320,16 @@ export class ContentGenerator {
       };
     }
 
-    if ((config as any).lightLevel) {
+    // Spawn rules have no time-of-day condition; vanilla approximates night-only (zombie) and
+    // day-only (cow) spawning with brightness filters, so timeOfDay maps to the same ranges.
+    // An explicit lightLevel takes precedence for any bound it sets.
+    const timeOfDayBrightness = ContentGenerator._getTimeOfDayBrightness(config.timeOfDay);
+    const lightLevel = config.lightLevel;
+    if (lightLevel || timeOfDayBrightness) {
       conditions["minecraft:brightness_filter"] = {
-        min: (config as any).lightLevel.min || 0,
-        max: (config as any).lightLevel.max || 15,
-        adjust_for_weather: true,
+        min: lightLevel?.min ?? timeOfDayBrightness?.min ?? 0,
+        max: lightLevel?.max ?? timeOfDayBrightness?.max ?? 15,
+        adjust_for_weather: timeOfDayBrightness?.adjust_for_weather ?? true,
       };
     }
 
@@ -3112,6 +3341,19 @@ export class ContentGenerator {
     }
 
     return conditions;
+  }
+
+  private static _getTimeOfDayBrightness(
+    timeOfDay?: "day" | "night" | "any"
+  ): { min: number; max: number; adjust_for_weather: boolean } | undefined {
+    switch (timeOfDay) {
+      case "night":
+        return { min: 0, max: 7, adjust_for_weather: true };
+      case "day":
+        return { min: 7, max: 15, adjust_for_weather: false };
+      default:
+        return undefined;
+    }
   }
 
   // ============================================================================

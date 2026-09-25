@@ -152,4 +152,16 @@ describe("EntityTraitApplier", () => {
     expect(detected).to.not.include("hostile");
     expect(detected).to.not.include("passive");
   });
+
+  it("breedable uses the entity's own identifier for breeds_with", () => {
+    const et = buildEntity();
+    et.id = "demo:unicorn";
+
+    applyEntityTraitChanges(et, [], ["breedable"] as EntityTraitId[]);
+
+    expect((et._data!.components as any)["minecraft:breedable"].breeds_with).to.deep.equal({
+      mate_type: "demo:unicorn",
+      baby_type: "demo:unicorn",
+    });
+  });
 });

@@ -49,13 +49,19 @@
       },
       "minecraft:breedable": {
         "require_tame": false,
-        "breeds_with": {
-          "mate_type": "self",
-          "baby_type": "self"
-        },
         "breed_items": [
-          "wheat"
-        ]
+          "wheat",
+          "carrot"
+        ],
+        "breeds_with": {
+          "mate_type": "test:fancy_sheep",
+          "baby_type": "test:fancy_sheep"
+        },
+        "breed_cooldown": 300
+      },
+      "minecraft:behavior.breed": {
+        "priority": 3,
+        "speed_multiplier": 1
       },
       "minecraft:behavior.follow_parent": {
         "priority": 5,

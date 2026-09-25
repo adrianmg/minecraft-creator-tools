@@ -75,16 +75,17 @@ export function applyEntityTraitChanges(
   }
 
   for (const traitId of added) {
-    const data = _getTraitData(traitId);
+    // Traits such as breedable reference the entity's own identifier.
+    const data = _getTraitData(traitId, et.id || undefined);
     if (!data) continue;
     _addTraitData(et, data);
   }
 }
 
-function _getTraitData(traitId: string): IEntityTraitData | undefined {
+function _getTraitData(traitId: string, entityId?: string): IEntityTraitData | undefined {
   const trait = TraitRegistry.getEntityTrait(traitId);
   if (!trait) return undefined;
-  return trait.getData();
+  return trait.getData(entityId ? { entityId } : undefined);
 }
 
 function _addTraitData(et: EntityTypeDefinition, data: IEntityTraitData): void {

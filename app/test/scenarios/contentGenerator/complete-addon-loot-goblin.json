@@ -8,6 +8,12 @@
           "name": "mymod:goblin_ear",
           "weight": 1
         }
+      ],
+      "conditions": [
+        {
+          "condition": "random_chance",
+          "chance": 0.5
+        }
       ]
     }
   ]

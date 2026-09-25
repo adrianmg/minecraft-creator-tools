@@ -3,7 +3,7 @@
   "minecraft:spawn_rules": {
     "description": {
       "identifier": "mymod:goblin",
-      "population_control": "animal"
+      "population_control": "monster"
     },
     "conditions": [
       {
@@ -26,6 +26,11 @@
         "minecraft:herd": {
           "min_size": 2,
           "max_size": 4
+        },
+        "minecraft:brightness_filter": {
+          "min": 0,
+          "max": 7,
+          "adjust_for_weather": true
         }
       }
     ]
