@@ -24,11 +24,18 @@ export function jsx(name, attributes = {}, children = []) {
   return {
     type: "mdxJsxFlowElement",
     name,
-    attributes: Object.entries(attributes).map(([key, value]) => ({
-      type: "mdxJsxAttribute",
-      name: key,
-      value: typeof value === "number" ? { type: "mdxJsxAttributeValueExpression", value: String(value) } : value,
-    })),
+    attributes: Object.entries(attributes)
+      .filter(([, value]) => value !== undefined && value !== false)
+      .map(([key, value]) => ({
+        type: "mdxJsxAttribute",
+        name: key,
+        value:
+          value === true
+            ? null
+            : typeof value === "number"
+              ? { type: "mdxJsxAttributeValueExpression", value: String(value) }
+              : value,
+      })),
     children,
   };
 }
@@ -126,7 +133,16 @@ function transformTabs(tree) {
   });
 }
 
-const PHRASING_PARENTS = new Set(["paragraph", "heading", "tableCell", "emphasis", "strong", "delete", "link", "linkReference"]);
+const PHRASING_PARENTS = new Set([
+  "paragraph",
+  "heading",
+  "tableCell",
+  "emphasis",
+  "strong",
+  "delete",
+  "link",
+  "linkReference",
+]);
 
 function transformHtml(tree, rewriteUrl) {
   visit(tree, "html", (node, index, parent) => {
@@ -151,16 +167,80 @@ function transformUrls(tree, rewriteUrl) {
   });
 }
 
+/** Replaces images that were converted to video with a user-controlled `<video>` element. */
+function transformVideos(tree, videoFor) {
+  const videoElement = (image, video) =>
+    jsx(
+      "video",
+      {
+        controls: true,
+        muted: true,
+        loop: true,
+        playsInline: true,
+        preload: "none",
+        poster: video.poster,
+        width: video.width,
+        height: video.height,
+        className: "w-full h-auto rounded-xl",
+        "aria-label": image.alt || undefined,
+        src: image.url,
+      },
+      [{ type: "paragraph", children: [{ type: "text", value: "Your browser doesn't support video playback." }] }]
+    );
+
+  const startsLine = (node) => !node || node.type === "break" || (node.type === "text" && /\n\s*$/.test(node.value));
+  const endsLine = (node) => !node || node.type === "break" || (node.type === "text" && /^\s*\n/.test(node.value));
+
+  // An image on its own line becomes a flow element; text on other lines of the same paragraph
+  // (for example a list step followed by its animation) stays in separate paragraphs.
+  visit(tree, "paragraph", (node, index, parent) => {
+    const replacement = [];
+    let current = [];
+    const flush = () => {
+      const trimmed = current.filter((child) => !(child.type === "text" && !child.value.trim()));
+      if (trimmed.length) replacement.push({ type: "paragraph", children: current });
+      current = [];
+    };
+
+    node.children.forEach((child, position) => {
+      const video = child.type === "image" ? videoFor(child.url) : undefined;
+      if (video && startsLine(node.children[position - 1]) && endsLine(node.children[position + 1])) {
+        const previous = current.at(-1);
+        if (previous?.type === "text") previous.value = previous.value.replace(/\s+$/, "");
+        flush();
+        replacement.push(videoElement(child, video));
+        const next = node.children[position + 1];
+        if (next?.type === "text") next.value = next.value.replace(/^\s+/, "");
+      } else {
+        current.push(child);
+      }
+    });
+    flush();
+
+    if (replacement.length === 1 && replacement[0].type === "paragraph") return;
+    parent.children.splice(index, 1, ...replacement);
+    return [SKIP, index + replacement.length];
+  });
+
+  visit(tree, "image", (node) => {
+    if (videoFor(node.url)) throw new Error(`An animated GIF must be on its own line to become a video: ${node.url}`);
+  });
+}
+
 /**
  * @param {string} markdown DocFX markdown after preprocessDocfx, without front matter.
- * @param {{ rewriteUrl?: (url: string, kind: "link" | "image") => string }} [options]
+ * @param {{
+ *   rewriteUrl?: (url: string, kind: "link" | "image") => string,
+ *   videoFor?: (url: string) => { poster: string, width: number, height: number } | undefined,
+ * }} [options] videoFor identifies rewritten image URLs that point at videos.
  * @returns {{ mdx: string, title?: string }}
  */
-export function markdownToMdx(markdown, { rewriteUrl = (url) => url } = {}) {
+export function markdownToMdx(markdown, { rewriteUrl = (url) => url, videoFor = () => undefined } = {}) {
   const tree = parser.parse(markdown);
   const title = extractTitle(tree);
   transformTabs(tree);
   transformUrls(tree, rewriteUrl);
+  transformVideos(tree, videoFor);
   transformBlockquotes(tree);
   transformHtml(tree, rewriteUrl);
   return { mdx: serializer.stringify(tree), title };

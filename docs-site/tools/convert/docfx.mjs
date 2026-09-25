@@ -45,7 +45,7 @@ function imageMarkdown(attributeText) {
 
 function videoHtml(url) {
   return (
-    `<iframe class="w-full aspect-video rounded-xl" src="${videoEmbedUrl(url)}" title="Video" ` +
+    `<iframe class="w-full aspect-video rounded-xl" src="${videoEmbedUrl(url)}" title="Video" loading="lazy" ` +
     `allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`
   );
 }
@@ -59,7 +59,11 @@ function codeBlock(prefix, attributeText, readInclude) {
   const longestRun = Math.max(2, ...[...content.matchAll(/`+/g)].map((match) => match[0].length));
   const fence = "`".repeat(longestRun + 1);
   const body = content.replace(/\r\n/g, "\n").replace(/\n+$/, "").split("\n");
-  return [`${prefix}${fence}${attributes.language ?? ""}`, ...body.map((line) => `${prefix}${line}`), `${prefix}${fence}`];
+  return [
+    `${prefix}${fence}${attributes.language ?? ""}`,
+    ...body.map((line) => `${prefix}${line}`),
+    `${prefix}${fence}`,
+  ];
 }
 
 /**
@@ -106,7 +110,9 @@ export function preprocessDocfx(markdown, { variant = "stable", readInclude = ()
       continue;
     }
 
-    output.push(line.replace(IMAGE, (_, attributes) => imageMarkdown(attributes)).replace(VIDEO, (_, url) => videoHtml(url)));
+    output.push(
+      line.replace(IMAGE, (_, attributes) => imageMarkdown(attributes)).replace(VIDEO, (_, url) => videoHtml(url))
+    );
   }
 
   return output.join("\n");

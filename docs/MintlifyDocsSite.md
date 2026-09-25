@@ -1,6 +1,6 @@
 # Mintlify docs site
 
-_Last revised: September 24, 2026_
+_Last revised: September 25, 2026_
 
 `docs-site/` converts the Minecraft: Bedrock Edition creator documentation from [MicrosoftDocs/minecraft-creator](https://github.com/MicrosoftDocs/minecraft-creator) (DocFX markdown published on Microsoft Learn) into a Mintlify project. It's a standalone npm package and doesn't affect the `app/` build. See [docs-site/README.md](../docs-site/README.md) for commands.
 
@@ -19,7 +19,7 @@ _Last revised: September 24, 2026_
    - Raw HTML becomes JSX (`tools/convert/html.mjs`). Tags outside an allowlist, such as `<players>` in command syntax, become text.
    - Links and images are rewritten (see Routes).
 5. **Landing pages.** `tools/convert/landing.mjs` turns `landingContent` into a `CardGroup`.
-6. **Media.** Only files that pages reference are copied, to lowercase paths.
+6. **Media.** Only files that pages reference are written, to lowercase paths. See Media below.
 7. **Configuration.** `config/docs.base.json` plus the generated navigation and redirects are written to `site/docs.json`. `authored/` is copied over the result.
 
 ## Routes
@@ -41,6 +41,22 @@ Within each version, every `@minecraft/*` module is its own sidebar dropdown (`p
 
 Pages outside the navigation are hidden in Mintlify. `seo.indexing: "all"` in `config/docs.base.json` keeps them in search, sitemaps, and AI context.
 
+## Media
+
+`tools/convert/media.mjs` reads image headers before pages are converted (`planMedia`), so links can point at the final files, and writes the referenced files after conversion (`processMedia`):
+
+| Source | Output | Why |
+| --- | --- | --- |
+| Animated GIF | H.264 MP4 at `name.gif.mp4` (max 1600 px wide) plus a WebP poster at `name.gif.webp` | GIFs were most of the page weight, and Mintlify rejects files of 20 MB or more. |
+| PNG or JPEG wider than 1920 px | Same path and format, resized to 1920 px, re-encoded losslessly for PNG | Removes pixels no reader sees without changing URLs or blurring UI text and pixel art. The original is kept if it's smaller. |
+| Anything else | Copied unchanged | |
+
+In `tools/convert/markdown.mjs`, an image that became a video is replaced with `<video controls muted loop playsInline preload="none">`, including its poster, dimensions, and alt text as `aria-label`. Videos don't autoplay and download only when played. When the image shares a paragraph with other lines, such as a list step followed by its animation, the paragraph is split around it. An animated GIF in the middle of a sentence fails the build.
+
+Encoded files are cached in `.cache/media/` by source content, operation, policy, and tool versions (sharp, libvips, ffmpeg), so rebuilds only re-encode what changed. Unused cache entries are removed after each build. The build fails if `ffmpeg` with `libx264` is missing, an encode fails, or any output is 20 MB or larger.
+
+`build-report.json` lists media totals by action and the heaviest pages. For each page, `loadBytes` is images and posters, which load with the page, and `onPlayBytes` is video, which loads only when played.
+
 ## Checks
 
 - `npm test`: table-driven unit tests for each transform, URL rewriting, and navigation.
@@ -49,6 +65,6 @@ Pages outside the navigation are hidden in Mintlify. `seo.indexing: "all"` in `c
 
 ## Known gaps
 
-- Media isn't optimized yet. Referenced media is about 565 MB, and 43 animated GIFs account for about 320 MB.
+- Static images stay lossless. About 190 MB of referenced images are unchanged; lossy WebP at quality 85 would cut them by about 83%, and lossless WebP by about 39%, but both change URLs and lossy encoding can soften UI text. Mintlify's CDN also optimizes images on deploy, but it doesn't document how.
 - About 60 links are broken upstream (moved or removed pages) and stay broken here.
 - Navigation mirrors upstream TOC groups; duplicate TOC entries keep only their first placement.

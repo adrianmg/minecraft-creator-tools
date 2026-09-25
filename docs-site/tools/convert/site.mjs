@@ -4,7 +4,8 @@
 
 import { posix } from "node:path";
 
-const LEARN_URL = /^(?:https?:\/\/learn\.microsoft\.com)?\/(?:[a-z]{2}-[a-z]{2}\/)?minecraft\/creator\/?([^?#]*)(\?[^#]*)?(#.*)?$/i;
+const LEARN_URL =
+  /^(?:https?:\/\/learn\.microsoft\.com)?\/(?:[a-z]{2}-[a-z]{2}\/)?minecraft\/creator\/?([^?#]*)(\?[^#]*)?(#.*)?$/i;
 const PAGE_EXTENSION = /\.(md|yml)$/i;
 
 export const BETA_PREFIX = "beta/";
@@ -31,16 +32,26 @@ function safeDecode(value) {
 }
 
 /**
- * @param {{ files: string[], pages: string[], experimentalOnly?: Set<string>, redirections?: { source_path: string, redirect_url: string }[] }} options
+ * @param {{ files: string[], pages: string[], experimentalOnly?: Set<string>, redirections?: { source_path: string, redirect_url: string }[], mediaPath?: (file: string, kind: "link" | "image") => string }} options
  *   files: every file under creator/ (posix, relative); pages: files published as pages;
  *   experimentalOnly: Script API pages that exist only in the experimental moniker;
- *   redirections: entries from creator/.openpublishing.redirection.json.
+ *   redirections: entries from creator/.openpublishing.redirection.json;
+ *   mediaPath: output path for a referenced file (defaults to the lowercased source path).
  */
-export function createSite({ files, pages, experimentalOnly = new Set(), redirections = [] }) {
+export function createSite({
+  files,
+  pages,
+  experimentalOnly = new Set(),
+  redirections = [],
+  mediaPath = (file) => file.toLowerCase(),
+}) {
   const fileByLowerPath = new Map(files.map((file) => [file.toLowerCase(), file]));
   const pageByKey = new Map(pages.map((page) => [routeKey(page), page]));
   const redirectByKey = new Map(redirections.map((entry) => [routeKey(entry.source_path), entry.redirect_url]));
-  const media = new Set();
+  /** @type {Map<string, Set<"link" | "image">>} Referenced file to how pages use it. */
+  const media = new Map();
+  /** @type {Map<string, Set<string>>} Page to the files it references. */
+  const mediaByPage = new Map();
   const unresolved = [];
 
   function routeFor(page, variant = "stable") {
@@ -65,7 +76,7 @@ export function createSite({ files, pages, experimentalOnly = new Set(), redirec
    * @param {string} url
    * @param {{ from: string, variant?: string, kind?: "link" | "image" }} context
    */
-  function rewriteUrl(url, { from, variant = "stable" }) {
+  function rewriteUrl(url, { from, variant = "stable", kind = "link" }) {
     if (!url || url.startsWith("#")) return url;
 
     let target;
@@ -99,8 +110,11 @@ export function createSite({ files, pages, experimentalOnly = new Set(), redirec
 
     const file = findFile(target);
     if (file) {
-      media.add(file);
-      return "/" + encodeURI(file.toLowerCase());
+      if (!media.has(file)) media.set(file, new Set());
+      media.get(file).add(kind);
+      if (!mediaByPage.has(from)) mediaByPage.set(from, new Set());
+      mediaByPage.get(from).add(file);
+      return "/" + encodeURI(mediaPath(file, kind));
     }
 
     unresolved.push({ from, url });
@@ -120,5 +134,5 @@ export function createSite({ files, pages, experimentalOnly = new Set(), redirec
       .map(({ source, page }) => ({ source, destination: `/${routeFor(page)}` }));
   }
 
-  return { routeFor, rewriteUrl, readableIncludePath, findFile, redirects, media, unresolved };
+  return { routeFor, rewriteUrl, readableIncludePath, findFile, redirects, media, mediaByPage, unresolved };
 }

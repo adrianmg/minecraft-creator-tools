@@ -2,7 +2,7 @@
 
 Builds a [Mintlify](https://www.mintlify.com/) version of the Minecraft: Bedrock Edition creator documentation from [MicrosoftDocs/minecraft-creator](https://github.com/MicrosoftDocs/minecraft-creator). For how the conversion works, see [docs/MintlifyDocsSite.md](../docs/MintlifyDocsSite.md).
 
-Requires Node.js 22 or later and git.
+Requires Node.js 22 or later, git, and [ffmpeg](https://ffmpeg.org/) with `libx264` (for converting animated GIFs to video, for example `brew install ffmpeg`).
 
 ## Build and preview
 
@@ -35,4 +35,4 @@ To preview on another port, run `cd site && npx mint dev --port 3333`. `npm run 
 | `tools/` | Sync, build, and check scripts. |
 | `test/` | Converter tests. |
 
-`.source/`, `site/`, and `build-report.json` are generated and ignored by git.
+`.source/`, `.cache/`, `site/`, and `build-report.json` are generated and ignored by git. The first build encodes all media (about 30 seconds); later builds reuse `.cache/media/`.
