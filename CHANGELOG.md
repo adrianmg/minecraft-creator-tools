@@ -18,6 +18,13 @@ For the full commit history, see [Releases](https://github.com/Mojang/minecraft-
   auto-format on every save, open the Settings panel and turn on
   "Format JSON and script on save".
 
+### Fixed
+
+- **MCP EULA check**: `createProject`, `addItem`, and `createMinecraftSessionWithContent`
+  now return an error asking the user to run `mct eula` when the Minecraft EULA hasn't been
+  accepted. Previously `createProject` reported success without creating any files.
+  Accepting in another terminal takes effect without restarting the MCP server.
+
 ## [0.16.1] (2026-04-03)
 
 - Bug fixes in the serve UX

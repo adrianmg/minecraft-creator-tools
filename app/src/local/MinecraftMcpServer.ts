@@ -55,7 +55,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as net from "net";
 import { PNG } from "pngjs";
-import { UNSAFE_PORTS } from "./LocalUtilities";
+import LocalUtilities, { UNSAFE_PORTS } from "./LocalUtilities";
 
 /**
  * Interface for MCT MCP preferences that can be stored in .mct/mcp/prefs.json files.
@@ -596,6 +596,11 @@ export default class MinecraftMcpServer {
       throw new Error("Creator Tools is not initialized");
     }
 
+    const eulaError = await this._eulaNotAcceptedResult();
+    if (eulaError) {
+      return eulaError;
+    }
+
     const serverManager = this.ensureServerManager();
 
     await this._env.load();
@@ -897,6 +902,51 @@ export default class MinecraftMcpServer {
     return false;
   }
 
+  /**
+   * Returns an error the agent can act on when the Minecraft EULA and Privacy Statement haven't been
+   * accepted, or undefined when they have. Tools that download Minecraft assets or the Bedrock
+   * Dedicated Server call this first, so they fail visibly instead of reporting success.
+   *
+   * Preferences are re-read from disk so that running `mct eula` in another terminal takes effect
+   * without restarting the MCP server. As in the CLI, MCTOOLS_I_ACCEPT_EULA_AT_MINECRAFTDOTNETSLASHEULA=true
+   * also counts as acceptance.
+   */
+  async _eulaNotAcceptedResult(): Promise<CallToolResult | undefined> {
+    if (!this._env) {
+      return undefined;
+    }
+
+    await this._env.load();
+
+    if (!this._env.iAgreeToTheMinecraftEndUserLicenseAgreementAndPrivacyStatementAtMinecraftDotNetSlashEula) {
+      await this._env.reload();
+    }
+
+    if (this._env.iAgreeToTheMinecraftEndUserLicenseAgreementAndPrivacyStatementAtMinecraftDotNetSlashEula) {
+      return undefined;
+    }
+
+    if (LocalUtilities.eulaAcceptedViaEnvironment) {
+      this._env.iAgreeToTheMinecraftEndUserLicenseAgreementAndPrivacyStatementAtMinecraftDotNetSlashEula = true;
+      await this._env.save();
+      return undefined;
+    }
+
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text:
+            "Nothing was changed: this tool uses Minecraft assets or the Bedrock Dedicated Server, which require " +
+            "accepting the Minecraft End User License Agreement (https://minecraft.net/eula) and Privacy Statement " +
+            "(https://go.microsoft.com/fwlink/?LinkId=521839). Ask the user to run `mct eula` in a terminal to review " +
+            "and accept them; don't accept on their behalf. Then call this tool again.",
+        },
+      ],
+    };
+  }
+
   async _createOp(args: {
     folderPathToCreateProjectAt: string;
     title: string;
@@ -914,6 +964,11 @@ export default class MinecraftMcpServer {
   }): Promise<CallToolResult> {
     if (!this._creatorTools) {
       throw new Error("Creator Tools is not initialized");
+    }
+
+    const eulaError = await this._eulaNotAcceptedResult();
+    if (eulaError) {
+      return eulaError;
     }
 
     if (!fs.existsSync(args.folderPathToCreateProjectAt)) {
@@ -993,6 +1048,11 @@ export default class MinecraftMcpServer {
   }): Promise<CallToolResult> {
     if (!this._creatorTools) {
       throw new Error("Creator Tools is not initialized");
+    }
+
+    const eulaError = await this._eulaNotAcceptedResult();
+    if (eulaError) {
+      return eulaError;
     }
 
     if (!fs.existsSync(args.folderPathToCreateProjectAt)) {

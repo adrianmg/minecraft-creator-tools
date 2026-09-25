@@ -173,13 +173,13 @@ npm install -g @minecraft/creator-tools
 
 **2. Accept the Minecraft EULA:**
 
-Before the MCP server will work, you must accept the Minecraft End User License Agreement:
+Tools that create projects from templates or start Minecraft sessions require you to accept the Minecraft End User License Agreement and Privacy Statement:
 
 ```bash
 npx mct eula
 ```
 
-Follow the prompts to review and accept. The MCP server will not start until the EULA has been accepted.
+Follow the prompts to review and accept. If you haven't accepted, those tools return an error that asks you to run `mct eula`.
 
 **3. Configure VS Code:**
 

@@ -371,6 +371,21 @@ export default class LocalEnvironment {
     this.#isLoaded = true;
   }
 
+  /**
+   * Re-reads preferences from disk, picking up changes made by other processes,
+   * such as `mct eula` run while an MCP server is already running. Values on disk
+   * take precedence; unsaved in-memory values (such as defaults) are kept.
+   */
+  async reload() {
+    await this.#configFile.loadContent(true);
+
+    if (typeof this.#configFile.content === "string") {
+      this.#data = { ...this.#data, ...JSON.parse(this.#configFile.content) };
+    }
+
+    this.#isLoaded = true;
+  }
+
   async setDefaults() {
     await this.load();
 
