@@ -35,4 +35,4 @@ To preview on another port, run `cd site && npx mint dev --port 3333`. `npm run 
 | `tools/` | Sync, build, and check scripts. |
 | `test/` | Converter tests. |
 
-`.source/`, `.cache/`, `site/`, and `build-report.json` are generated and ignored by git. The first build encodes all media (about 30 seconds); later builds reuse `.cache/media/`.
+`.source/`, `.cache/`, `site/`, and `build-report.json` are generated and ignored by git. The first build encodes all media (about 2 minutes); later builds reuse `.cache/media/`.

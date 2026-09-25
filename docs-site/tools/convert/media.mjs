@@ -3,8 +3,10 @@
 // v1 policy:
 // - Animated GIFs become H.264 MP4 videos with a WebP poster (first frame). Mintlify rejects files of
 //   20 MB or more, and GIFs are most of the page weight.
-// - PNG and JPEG files stay lossless and keep their paths; only files wider than maxImageWidth are
-//   resized. Keeping paths means no link changes and no quality loss for UI text or pixel art.
+// - PNG files of minWebpBytes or more become lossless WebP (pixels are identical). Measured on this
+//   content, lossless WebP was never larger than the PNG above 50 KB, so the decision needs no encoding.
+// - PNG and JPEG files wider than maxImageWidth are resized. JPEG stays JPEG: re-encoding it
+//   losslessly would make it bigger.
 // - Everything else is copied unchanged.
 // Encoded outputs are cached in .cache/media/ by source content, operation, and tool versions.
 
@@ -16,6 +18,7 @@ import sharp from "sharp";
 
 export const MEDIA_POLICY = {
   maxImageWidth: 1920,
+  minWebpBytes: 50_000,
   maxVideoWidth: 1600,
   videoCrf: 26,
   videoPreset: "medium",
@@ -29,25 +32,29 @@ const even = (value) => Math.max(2, Math.round(value / 2) * 2);
 /** Deterministic output paths that can't collide with source files. */
 export const videoPath = (file) => `${file.toLowerCase()}.mp4`;
 export const posterPath = (file) => `${file.toLowerCase()}.webp`;
+export const webpPath = (file) => `${file.toLowerCase()}.webp`;
 
 /**
- * Decides what to do with one image from its metadata.
+ * Decides what to do with one image from its metadata and file size.
  * @param {{ format?: string, width?: number, height?: number, pageHeight?: number, pages?: number }} metadata
  */
-export function decideMedia(metadata, policy = MEDIA_POLICY) {
+export function decideMedia(metadata, bytes = 0, policy = MEDIA_POLICY) {
   const { format, width = 0, pages = 1 } = metadata;
   const height = metadata.pageHeight ?? metadata.height ?? 0;
+  const capped = () => {
+    const outWidth = Math.min(width, policy.maxImageWidth);
+    return { width: outWidth, height: width ? Math.round((height * outWidth) / width) : height };
+  };
 
   if (format === "gif" && pages > 1 && width && height) {
     const outWidth = even(Math.min(width, policy.maxVideoWidth));
     return { kind: "video", width: outWidth, height: even((height * outWidth) / width) };
   }
+  if (format === "png" && bytes >= policy.minWebpBytes) {
+    return { kind: "webp", ...capped(), sourceWidth: width };
+  }
   if ((format === "png" || format === "jpeg") && width > policy.maxImageWidth) {
-    return {
-      kind: "resize",
-      width: policy.maxImageWidth,
-      height: Math.round((height * policy.maxImageWidth) / width),
-    };
+    return { kind: "resize", ...capped() };
   }
   return { kind: "copy", width, height };
 }
@@ -56,13 +63,22 @@ export function decideMedia(metadata, policy = MEDIA_POLICY) {
 export async function planMedia(files, contentRoot, policy = MEDIA_POLICY) {
   const plan = new Map();
   for (const file of files.filter((candidate) => IMAGE_EXTENSION.test(candidate))) {
+    const path = join(contentRoot, file);
     try {
-      plan.set(file, decideMedia(await sharp(join(contentRoot, file)).metadata(), policy));
+      plan.set(file, decideMedia(await sharp(path).metadata(), statSync(path).size, policy));
     } catch {
       plan.set(file, { kind: "copy" });
     }
   }
   return plan;
+}
+
+/** Output path for a file referenced as an image or a link, according to the plan. */
+export function outputPath(file, kind, plan) {
+  const action = kind === "image" ? plan.get(file)?.kind : undefined;
+  if (action === "video") return videoPath(file);
+  if (action === "webp") return webpPath(file);
+  return file.toLowerCase();
 }
 
 function toolVersions() {
@@ -111,17 +127,15 @@ export async function processMedia({ uses, plan, contentRoot, siteRoot, cacheRoo
   const usedCacheFiles = new Set();
   mkdirSync(cacheRoot, { recursive: true });
 
-  const cached = async (file, operation, extension, encode) => {
+  // `recipe` describes the exact encode, so any change to its parameters produces a new cache entry.
+  const cached = async (file, recipe, extension, encode) => {
     const source = readFileSync(join(contentRoot, file));
-    const key = createHash("sha256")
-      .update(source)
-      .update(JSON.stringify({ operation, policy, versions }))
-      .digest("hex");
+    const key = createHash("sha256").update(source).update(JSON.stringify({ recipe, versions })).digest("hex");
     const target = join(cacheRoot, `${key}${extension}`);
     usedCacheFiles.add(target);
     if (!existsSync(target)) {
       const temporary = `${target}.${process.pid}.tmp${extension}`;
-      await encode(join(contentRoot, file), temporary);
+      await encode(join(contentRoot, file), temporary, recipe);
       renameSync(temporary, target);
     }
     return target;
@@ -146,15 +160,23 @@ export async function processMedia({ uses, plan, contentRoot, siteRoot, cacheRoo
     const add = (from, path, role) => result.outputs.push({ path, bytes: write(from, path), role });
 
     if (action.kind === "video" && kinds.has("image")) {
-      const video = await cached(file, "video", ".mp4", (input, output) =>
+      const videoRecipe = {
+        operation: "video",
+        width: action.width,
+        height: action.height,
+        crf: policy.videoCrf,
+        preset: policy.videoPreset,
+      };
+      const video = await cached(file, videoRecipe, ".mp4", (input, output, recipe) =>
         run("ffmpeg", [
           ...["-v", "error", "-y", "-i", input, "-an", "-movflags", "+faststart", "-pix_fmt", "yuv420p"],
-          ...["-vf", `scale=${action.width}:${action.height}:flags=lanczos`, "-c:v", "libx264"],
-          ...["-crf", String(policy.videoCrf), "-preset", policy.videoPreset, "-f", "mp4", output],
+          ...["-vf", `scale=${recipe.width}:${recipe.height}:flags=lanczos`, "-c:v", "libx264"],
+          ...["-crf", String(recipe.crf), "-preset", recipe.preset, "-f", "mp4", output],
         ])
       );
-      const poster = await cached(file, "poster", ".webp", (input, output) =>
-        sharp(input, { pages: 1 }).resize({ width: action.width }).webp({ quality: 80 }).toFile(output)
+      const posterRecipe = { operation: "poster", width: action.width, quality: 80 };
+      const poster = await cached(file, posterRecipe, ".webp", (input, output, recipe) =>
+        sharp(input, { pages: 1 }).resize({ width: recipe.width }).webp({ quality: recipe.quality }).toFile(output)
       );
       add(video, videoPath(file), "video");
       add(poster, posterPath(file), "poster");
@@ -162,16 +184,39 @@ export async function processMedia({ uses, plan, contentRoot, siteRoot, cacheRoo
 
     if (action.kind === "resize") {
       const format = file.toLowerCase().endsWith(".png") ? "png" : "jpeg";
-      const resized = await cached(file, "resize", `.${format}`, (input, output) =>
+      const resizeRecipe = {
+        operation: "resize",
+        width: action.width,
+        format,
+        options: format === "png" ? { compressionLevel: 9 } : { quality: 90, mozjpeg: true },
+      };
+      const resized = await cached(file, resizeRecipe, `.${format}`, (input, output, recipe) =>
         sharp(input)
-          .resize({ width: action.width, withoutEnlargement: true })
-          .toFormat(format, format === "png" ? { compressionLevel: 9, effort: 10 } : { quality: 90, mozjpeg: true })
+          .resize({ width: recipe.width, withoutEnlargement: true })
+          .toFormat(recipe.format, recipe.options)
           .toFile(output)
       );
       add(statSync(resized).size < result.sourceBytes ? resized : sourcePath, file.toLowerCase(), "image");
     }
 
-    if (action.kind === "copy" || (action.kind === "video" && kinds.has("link"))) {
+    if (action.kind === "webp" && kinds.has("image")) {
+      // Downscaling blends flat colors into gradients, which lossless encoding handles poorly, so a
+      // resized diagram can be larger than the full-size one. Keep whichever is smaller.
+      const encode = (input, output, recipe) =>
+        (recipe.width ? sharp(input).resize({ width: recipe.width, withoutEnlargement: true }) : sharp(input))
+          .webp({ lossless: true, effort: recipe.effort })
+          .toFile(output);
+      const webpRecipe = { operation: "webp", lossless: true, effort: 4, width: null };
+      const candidates = [await cached(file, webpRecipe, ".webp", encode)];
+      if (action.sourceWidth > action.width) {
+        candidates.push(await cached(file, { ...webpRecipe, width: action.width }, ".webp", encode));
+      }
+      const [smallest] = candidates.sort((a, b) => statSync(a).size - statSync(b).size);
+      add(smallest, webpPath(file), "image");
+    }
+
+    const linkedOriginal = (action.kind === "video" || action.kind === "webp") && kinds.has("link");
+    if (action.kind === "copy" || linkedOriginal) {
       add(sourcePath, file.toLowerCase(), "image");
     }
 

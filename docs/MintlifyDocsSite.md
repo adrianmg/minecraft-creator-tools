@@ -48,12 +48,15 @@ Pages outside the navigation are hidden in Mintlify. `seo.indexing: "all"` in `c
 | Source | Output | Why |
 | --- | --- | --- |
 | Animated GIF | H.264 MP4 at `name.gif.mp4` (max 1600 px wide) plus a WebP poster at `name.gif.webp` | GIFs were most of the page weight, and Mintlify rejects files of 20 MB or more. |
-| PNG or JPEG wider than 1920 px | Same path and format, resized to 1920 px, re-encoded losslessly for PNG | Removes pixels no reader sees without changing URLs or blurring UI text and pixel art. The original is kept if it's smaller. |
+| PNG of 50 KB or more | Lossless WebP at `name.png.webp`, with identical pixels. For PNGs wider than 1920 px, both a full-size and a 1920 px version are encoded and the smaller is kept. | On this content, lossless WebP was never larger than the PNG above 50 KB, so the path can be chosen before encoding. Downscaling blends the flat colors of diagrams and UI screenshots into gradients, which lossless encoding handles poorly, so the resized version isn't always smaller. |
+| Smaller PNG or any JPEG wider than 1920 px | Same path and format, resized to 1920 px | JPEG stays JPEG; re-encoding it losslessly would make it bigger. |
 | Anything else | Copied unchanged | |
+
+PNG re-encodes use only `compressionLevel`: in sharp, the PNG `effort`, `quality`, and `colours` options turn on palette quantization, which is lossy.
 
 In `tools/convert/markdown.mjs`, an image that became a video is replaced with `<video controls muted loop playsInline preload="none">`, including its poster, dimensions, and alt text as `aria-label`. Videos don't autoplay and download only when played. When the image shares a paragraph with other lines, such as a list step followed by its animation, the paragraph is split around it. An animated GIF in the middle of a sentence fails the build.
 
-Encoded files are cached in `.cache/media/` by source content, operation, policy, and tool versions (sharp, libvips, ffmpeg), so rebuilds only re-encode what changed. Unused cache entries are removed after each build. The build fails if `ffmpeg` with `libx264` is missing, an encode fails, or any output is 20 MB or larger.
+Encoded files are cached in `.cache/media/` by source content, the exact encode parameters, and tool versions (sharp, libvips, ffmpeg), so rebuilds only re-encode what changed. Unused cache entries are removed after each build. The build fails if `ffmpeg` with `libx264` is missing, an encode fails, or any output is 20 MB or larger. It warns if a WebP ends up larger than its PNG.
 
 `build-report.json` lists media totals by action and the heaviest pages. For each page, `loadBytes` is images and posters, which load with the page, and `onPlayBytes` is video, which loads only when played.
 
@@ -65,6 +68,6 @@ Encoded files are cached in `.cache/media/` by source content, operation, policy
 
 ## Known gaps
 
-- Static images stay lossless. About 190 MB of referenced images are unchanged; lossy WebP at quality 85 would cut them by about 83%, and lossless WebP by about 39%, but both change URLs and lossy encoding can soften UI text. Mintlify's CDN also optimizes images on deploy, but it doesn't document how.
+- Images are lossless. Referenced media is about 156 MB, mostly lossless WebP screenshots; `EditorTutorial` still loads about 15 MB. Lossy WebP would cut much more (about 83% in a sample) but can soften UI text. Mintlify's CDN also optimizes images on deploy, but it doesn't document how.
 - About 60 links are broken upstream (moved or removed pages) and stay broken here.
 - Navigation mirrors upstream TOC groups; duplicate TOC entries keep only their first placement.

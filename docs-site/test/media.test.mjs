@@ -27,14 +27,32 @@ describe("decideMedia", () => {
       expected: { kind: "copy", width: 400, height: 300 },
     },
     {
-      name: "wide PNG is resized",
+      name: "wide PNG under the WebP threshold is resized",
       metadata: { format: "png", width: 3840, height: 2160 },
       expected: { kind: "resize", width: 1920, height: 1080 },
     },
     {
-      name: "PNG at the max width is copied",
+      name: "PNG under the WebP threshold at the max width is copied",
       metadata: { format: "png", width: 1920, height: 1080 },
       expected: { kind: "copy", width: 1920, height: 1080 },
+    },
+    {
+      name: "PNG at the WebP threshold becomes lossless WebP",
+      metadata: { format: "png", width: 800, height: 600 },
+      bytes: 50_000,
+      expected: { kind: "webp", width: 800, height: 600, sourceWidth: 800 },
+    },
+    {
+      name: "wide PNG over the threshold becomes resized lossless WebP",
+      metadata: { format: "png", width: 2560, height: 1440 },
+      bytes: 3_000_000,
+      expected: { kind: "webp", width: 1920, height: 1080, sourceWidth: 2560 },
+    },
+    {
+      name: "large JPEG stays JPEG",
+      metadata: { format: "jpeg", width: 1200, height: 800 },
+      bytes: 3_000_000,
+      expected: { kind: "copy", width: 1200, height: 800 },
     },
     {
       name: "wide JPEG is resized",
@@ -43,8 +61,8 @@ describe("decideMedia", () => {
     },
   ];
 
-  for (const { name, metadata, expected } of cases) {
-    it(name, () => assert.deepEqual(decideMedia(metadata), expected));
+  for (const { name, metadata, bytes, expected } of cases) {
+    it(name, () => assert.deepEqual(decideMedia(metadata, bytes), expected));
   }
 });
 
@@ -125,11 +143,44 @@ describe("processMedia", () => {
 
     const results = await run();
     assert.equal((await sharp(join(siteRoot, "wide.png")).metadata()).width, 8);
+    assert.equal((await sharp(join(siteRoot, "wide.png")).metadata()).paletteBitDepth, undefined, "must stay lossless");
     assert.equal(statSync(join(siteRoot, "data.json")).size, 2);
     assert.deepEqual(results.map(({ kind }) => kind).sort(), ["copy", "resize"]);
 
     const cacheFiles = readdirSync(cacheRoot);
     await run();
     assert.deepEqual(readdirSync(cacheRoot), cacheFiles);
+
+    await processMedia({
+      uses: new Map([["Wide.PNG", new Set(["image"])]]),
+      plan: new Map([["Wide.PNG", { kind: "resize", width: 4, height: 2 }]]),
+      contentRoot,
+      siteRoot,
+      cacheRoot,
+      policy,
+    });
+    assert.equal((await sharp(join(siteRoot, "wide.png")).metadata()).width, 4, "a changed recipe must re-encode");
+  });
+
+  it("writes lossless WebP with identical pixels and keeps linked originals", async () => {
+    const contentRoot = join(root, "content-webp");
+    const siteRoot = join(root, "site-webp");
+    const noise = Buffer.from(Array.from({ length: 32 * 16 * 3 }, (_, index) => (index * 31) % 256));
+    mkdirSync(contentRoot, { recursive: true });
+    await sharp(noise, { raw: { width: 32, height: 16, channels: 3 } })
+      .png()
+      .toFile(join(contentRoot, "Shot.png"));
+
+    await processMedia({
+      uses: new Map([["Shot.png", new Set(["image", "link"])]]),
+      plan: new Map([["Shot.png", { kind: "webp", width: 32, height: 16 }]]),
+      contentRoot,
+      siteRoot,
+      cacheRoot: join(root, "cache-webp"),
+    });
+
+    const pixels = async (path) => (await sharp(path).removeAlpha().raw().toBuffer()).toString("base64");
+    assert.equal(await pixels(join(siteRoot, "shot.png.webp")), await pixels(join(contentRoot, "Shot.png")));
+    assert.ok(statSync(join(siteRoot, "shot.png")).size > 0);
   });
 });

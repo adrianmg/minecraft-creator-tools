@@ -8,7 +8,7 @@ import { dump, load } from "js-yaml";
 import { preprocessDocfx } from "./convert/docfx.mjs";
 import { landingToMdx } from "./convert/landing.mjs";
 import { markdownToMdx } from "./convert/markdown.mjs";
-import { planMedia, posterPath, processMedia, videoPath } from "./convert/media.mjs";
+import { outputPath, planMedia, posterPath, processMedia, videoPath } from "./convert/media.mjs";
 import { buildNavigation, findTocNode, loadToc } from "./convert/nav.mjs";
 import { createSite, isScriptApi } from "./convert/site.mjs";
 
@@ -75,8 +75,7 @@ const videoByUrl = new Map(
       { poster: "/" + encodeURI(posterPath(file)), width, height },
     ])
 );
-const mediaPath = (file, kind) =>
-  kind === "image" && mediaPlan.get(file)?.kind === "video" ? videoPath(file) : file.toLowerCase();
+const mediaPath = (file, kind) => outputPath(file, kind, mediaPlan);
 
 const site = createSite({ files, pages, experimentalOnly, redirections: readRedirections(), mediaPath });
 const pageSet = new Set(pages);
@@ -168,7 +167,7 @@ const outputBytes = (result, roles) =>
 const resultByFile = new Map(mediaResults.map((result) => [result.file, result]));
 
 const mediaByKind = Object.fromEntries(
-  ["video", "resize", "copy"].map((kind) => {
+  ["video", "webp", "resize", "copy"].map((kind) => {
     const items = mediaResults.filter((result) => result.kind === kind);
     return [
       kind,
@@ -200,6 +199,9 @@ const media = {
   sourceBytes: sum(mediaResults, (result) => result.sourceBytes),
   outputBytes: sum(mediaResults, (result) => outputBytes(result, ["image", "poster", "video"])),
   byKind: mediaByKind,
+  webpLargerThanSource: mediaResults
+    .filter((result) => result.kind === "webp" && outputBytes(result, ["image"]) >= result.sourceBytes)
+    .map((result) => result.file),
   pagesOver5MB: {
     before: pageMedia.filter((page) => page.sourceBytes > 5e6).length,
     after: pageMedia.filter((page) => page.loadBytes > 5e6).length,
@@ -222,9 +224,13 @@ const megabytes = (bytes) => `${(bytes / 1e6).toFixed(0)} MB`;
 console.log(`Wrote ${written} pages (${placed.size} in navigation).`);
 console.log(
   `Media: ${media.files} files, ${megabytes(media.sourceBytes)} -> ${megabytes(media.outputBytes)} ` +
-    `(${mediaByKind.video.files} GIFs to video, ${mediaByKind.resize.files} images resized).`
+    `(${mediaByKind.video.files} GIFs to video, ${mediaByKind.webp.files} PNGs to lossless WebP, ` +
+    `${mediaByKind.resize.files} images resized).`
 );
 console.log(
   `Unresolved links: ${site.unresolved.length}. Conversion failures: ${failures.length}. Details: build-report.json`
 );
+if (media.webpLargerThanSource.length) {
+  console.warn(`Warning: ${media.webpLargerThanSource.length} WebP files are larger than their PNG sources.`);
+}
 if (failures.length) process.exitCode = 1;
