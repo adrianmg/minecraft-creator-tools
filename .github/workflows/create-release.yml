@@ -76,6 +76,81 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Publishes server.json to the official MCP Registry (registry.modelcontextprotocol.io).
+      # - Skips when semantic-release did not publish a new version (pkgRoot package.json still has
+      #   the placeholder version).
+      # - Non-blocking (continue-on-error): npm and the GitHub release are already published at this
+      #   point and the registry is in preview, so a registry outage or rejection must not fail the
+      #   release. The next step surfaces a warning; re-publish manually with `mcp-publisher publish`.
+      # - server.json versions are stamped by `gulp updateversions` during semantic-release prepare.
+      - name: Publish to MCP Registry
+        id: publish_mcp_registry
+        continue-on-error: true
+        shell: bash
+        env:
+          MCP_PUBLISHER_VERSION: "1.8.1"
+          # SHA-256 of registry_<version>_checksums.txt from the pinned mcp-publisher release.
+          MCP_PUBLISHER_CHECKSUMS_SHA256: "f7937a7908096f63147658e13f0f63a393a1c9fc722a2d10017593940d36e59e"
+        run: |
+          set -euo pipefail
+
+          RELEASED_VERSION=$(node -p "require('./app/toolbuild/jsn/package.json').version")
+          if [ "$RELEASED_VERSION" = "0.0.0-semantically-released" ]; then
+            echo "No new release was published; skipping MCP Registry publish."
+            exit 0
+          fi
+
+          SERVER_JSON_VERSION=$(node -p "const s = require('./server.json'); [s.version, ...s.packages.map((p) => p.version)].every((v) => v === s.version) ? s.version : 'mismatch'")
+          if [ "$SERVER_JSON_VERSION" != "$RELEASED_VERSION" ]; then
+            echo "::error::server.json versions ($SERVER_JSON_VERSION) do not match the released version ($RELEASED_VERSION)."
+            exit 1
+          fi
+
+          case "$RUNNER_OS" in
+            Windows) os=windows; exe=mcp-publisher.exe ;;
+            macOS) os=darwin; exe=mcp-publisher ;;
+            *) os=linux; exe=mcp-publisher ;;
+          esac
+          case "$RUNNER_ARCH" in
+            ARM64) arch=arm64 ;;
+            *) arch=amd64 ;;
+          esac
+
+          base_url="https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}"
+          checksums="registry_${MCP_PUBLISHER_VERSION}_checksums.txt"
+          archive="mcp-publisher_${os}_${arch}.tar.gz"
+          workdir="$RUNNER_TEMP/mcp-publisher"
+          mkdir -p "$workdir"
+
+          curl -fsSL --retry 3 -o "$workdir/$checksums" "$base_url/$checksums"
+          curl -fsSL --retry 3 -o "$workdir/$archive" "$base_url/$archive"
+          (
+            cd "$workdir"
+            echo "$MCP_PUBLISHER_CHECKSUMS_SHA256  $checksums" | sha256sum -c -
+            grep " $archive\$" "$checksums" | sha256sum -c -
+            tar -xzf "$archive" "$exe"
+          )
+          publisher="$workdir/$exe"
+
+          "$publisher" login github-oidc
+
+          # npm metadata for a just-published version can take a moment to propagate, and the
+          # registry verifies mcpName against it, so retry a few times.
+          for attempt in 1 2 3; do
+            if "$publisher" publish server.json; then
+              echo "Published io.github.Mojang/minecraft-creator-tools $RELEASED_VERSION to the MCP Registry."
+              exit 0
+            fi
+            echo "MCP Registry publish attempt $attempt failed."
+            if [ "$attempt" -lt 3 ]; then sleep 30; fi
+          done
+          exit 1
+
+      - name: Warn if MCP Registry publish failed
+        if: steps.publish_mcp_registry.outcome == 'failure'
+        shell: bash
+        run: echo "::warning::Publishing to the MCP Registry failed; the npm package and GitHub release are unaffected. Re-run 'mcp-publisher publish' manually for this version."
+
       - name: Deploy to GitHub Pages
         if: success()
         uses: crazy-max/ghaction-github-pages@a117e4aa1fb4854d021546d2abdfac95be568a3a # v2.6.0

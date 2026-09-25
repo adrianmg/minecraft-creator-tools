@@ -29,6 +29,8 @@ Note: most project work is in the `app` folder.
 - `app/src/`: Main source code with application source code
 - `app/public/`: Data files and static assets for the web application
 - `app/jsnode/`: Files to be packaged into the NodeJS command line tool
+- `server.json` (repo root): Official MCP Registry manifest for the MCP server (`mct mcp`). Its versions are stamped by `npx gulp updateversions` during release, and its `name` must match `mcpName` in `app/jsnode/package.json`. See `docs/McpRegistryPublishing.md`.
+- MCP tool annotations (behavior hints) live in `app/src/local/McpToolAnnotations.ts`; every tool registered in `MinecraftMcpServer.ts` needs an entry (enforced by `app/src/test/McpServerMetadataTest.ts`).
 - `app/debugoutput/`: Files created while debugging or for temporary purposes; ignore these files in pull requests
 - `app/build/`: Build output folder for the website version of the applicastion
 - `app/out/`: Build output folder for the Electron version of the applicastion

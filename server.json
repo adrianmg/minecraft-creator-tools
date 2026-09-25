@@ -1,0 +1,32 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Mojang/minecraft-creator-tools",
+  "title": "Minecraft Creator Tools",
+  "description": "Create, validate, and test Minecraft Bedrock Edition add-ons, models, and structures.",
+  "version": "0.0.0-semantically-released",
+  "websiteUrl": "https://mctools.dev",
+  "repository": {
+    "url": "https://github.com/Mojang/minecraft-creator-tools",
+    "source": "github",
+    "id": "687096361",
+    "subfolder": "app"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@minecraft/creator-tools",
+      "version": "0.0.0-semantically-released",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}

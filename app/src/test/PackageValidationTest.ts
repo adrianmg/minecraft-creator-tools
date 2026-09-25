@@ -129,6 +129,13 @@ describe("PackageValidation", function () {
       assert(binKeys.length > 0, "bin entry should have at least one command");
     });
 
+    it("should declare mcpName matching the MCP Registry server.json", function () {
+      const pkg = JSON.parse(fs.readFileSync(path.join(unpackedDir, "package", "package.json"), "utf-8"));
+      const serverJson = JSON.parse(fs.readFileSync(path.join(TestPaths.repoRoot, "server.json"), "utf-8"));
+
+      assert.strictEqual(pkg.mcpName, serverJson.name, "published package.json mcpName must match server.json name");
+    });
+
     it("should contain the CLI entry point", function () {
       const pkg = JSON.parse(fs.readFileSync(path.join(unpackedDir, "package", "package.json"), "utf-8"));
       const binEntries = Object.values(pkg.bin) as string[];

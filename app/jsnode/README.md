@@ -211,6 +211,8 @@ Or, to make the MCP server available in all your VS Code projects, open the Comm
 }
 ```
 
+If your MCP client can't run `mct eula` before starting the server, review the [Minecraft EULA](https://minecraft.net/eula) and [Privacy Statement](https://go.microsoft.com/fwlink/?LinkId=521839) yourself and, if you agree, set `MCTOOLS_I_ACCEPT_EULA_AT_MINECRAFTDOTNETSLASHEULA=true` in the MCP server's environment. The MCP server treats this the same way as the `create` and `add` commands do.
+
 ---
 
 ## Trademarks

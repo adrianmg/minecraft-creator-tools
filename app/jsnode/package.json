@@ -1,5 +1,6 @@
 {
   "name": "@minecraft/creator-tools",
+  "mcpName": "io.github.Mojang/minecraft-creator-tools",
   "version": "0.0.0-semantically-released",
   "productName": "Minecraft Creator Tools",
   "description": "Minecraft Creator Tools command line and libraries.",

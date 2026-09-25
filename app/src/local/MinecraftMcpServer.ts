@@ -8,6 +8,8 @@ import { randomUUID } from "crypto";
 import { DedicatedServerStatus } from "./DedicatedServer";
 import MinecraftUtilities from "../minecraft/MinecraftUtilities";
 import Log from "../core/Log";
+import { constants } from "../core/Constants";
+import { getMcpToolAnnotations } from "./McpToolAnnotations";
 import HttpUtilities from "./HttpUtilities";
 import CreatorTools from "../app/CreatorTools";
 import Database from "../minecraft/Database";
@@ -55,7 +57,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as net from "net";
 import { PNG } from "pngjs";
-import { UNSAFE_PORTS } from "./LocalUtilities";
+import LocalUtilities, { UNSAFE_PORTS } from "./LocalUtilities";
 
 /**
  * Interface for MCT MCP preferences that can be stored in .mct/mcp/prefs.json files.
@@ -147,7 +149,8 @@ export default class MinecraftMcpServer {
   constructor() {
     this._server = new McpServer({
       name: "minecraft-creator-tools",
-      version: "1.0.0",
+      // Stamped with the released package version by `gulp updateversions`.
+      version: constants.version,
     });
 
     this._processValidateContent = this._processValidateContent.bind(this);
@@ -177,10 +180,41 @@ export default class MinecraftMcpServer {
    * excessively deep and possibly infinite" caused by the SDK's complex generic
    * inference on ToolCallback<InputArgs>. Casts the callback to `any` to break the
    * recursive type chain while preserving runtime behavior.
+   *
+   * Also attaches MCP tool annotations (title + behavior hints) from McpToolAnnotations.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _registerTool(name: string, config: Record<string, any>, cb: (...args: any[]) => any): void {
-    this._server.registerTool(name, config as any, cb as any);
+    const annotations = { ...getMcpToolAnnotations(name, config.title), ...config.annotations };
+    this._server.registerTool(name, { ...config, annotations } as any, cb as any);
+  }
+
+  /**
+   * Returns true if the Minecraft EULA + Privacy Statement has been accepted, either
+   * previously (persisted by `mct eula`) or via the
+   * MCTOOLS_I_ACCEPT_EULA_AT_MINECRAFTDOTNETSLASHEULA environment variable. Like the CLI
+   * `create`/`add` commands, acceptance via the environment variable is persisted to the
+   * local environment settings.
+   */
+  async _ensureEulaAccepted(): Promise<boolean> {
+    if (!this._env) {
+      return false;
+    }
+
+    await this._env.load();
+
+    if (this._env.iAgreeToTheMinecraftEndUserLicenseAgreementAndPrivacyStatementAtMinecraftDotNetSlashEula) {
+      return true;
+    }
+
+    if (!LocalUtilities.eulaAcceptedViaEnvironment) {
+      return false;
+    }
+
+    this._env.iAgreeToTheMinecraftEndUserLicenseAgreementAndPrivacyStatementAtMinecraftDotNetSlashEula = true;
+    await this._env.save();
+
+    return true;
   }
 
   /**
@@ -799,9 +833,7 @@ export default class MinecraftMcpServer {
       return;
     }
 
-    await this._env.load();
-
-    if (!this._env.iAgreeToTheMinecraftEndUserLicenseAgreementAndPrivacyStatementAtMinecraftDotNetSlashEula) {
+    if (!(await this._ensureEulaAccepted())) {
       Log.message("The Minecraft End User License Agreement and Privacy Statement was not agreed to.");
       return;
     }
@@ -869,9 +901,7 @@ export default class MinecraftMcpServer {
       return false;
     }
 
-    await this._env.load();
-
-    if (!this._env.iAgreeToTheMinecraftEndUserLicenseAgreementAndPrivacyStatementAtMinecraftDotNetSlashEula) {
+    if (!(await this._ensureEulaAccepted())) {
       Log.message("The Minecraft End User License Agreement and Privacy Statement was not agreed to.");
       return false;
     }
@@ -4419,7 +4449,7 @@ export default class MinecraftMcpServer {
             "When NOT to use this tool:\n" +
             "  - For a standalone 3D model preview (no project, just a PNG + .geo.json): use `designModel`.\n" +
             "  - For a standalone structure preview (.mcstructure only): use `designStructure`.\n" +
-            "  - For a single texture PNG from pixel art: use `writeImageFileFromPixelArt` or `previewTextureSpec`.\n" +
+            "  - For a single texture PNG: use `writeImageFileFromPixelArt` (ASCII pixel art) or `writeImageFileFromSvg` (SVG markup).\n" +
             "  - To analyze or reverse-engineer an existing project: use `getEffectiveContentSchema`.\n" +
             "\n" +
             "The meta-schema has three layers of abstraction you can mix freely: " +

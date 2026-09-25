@@ -854,6 +854,28 @@ function runUpdateVersions() {
     );
 }
 
+// The MCP Registry manifest (../server.json) carries the version twice (server + npm
+// package), so it is rewritten as JSON rather than via updateVersions, which only
+// replaces the first "version" token in a file.
+function runUpdateMcpServerJsonVersion(done) {
+  const version = JSON.parse(fs.readFileSync(versionSource[0], "utf-8")).version;
+  const packageName = JSON.parse(fs.readFileSync("./jsnode/package.json", "utf-8")).name;
+  const serverJsonPath = "../server.json";
+  const serverJson = JSON.parse(fs.readFileSync(serverJsonPath, "utf-8"));
+
+  serverJson.version = version;
+
+  for (const pkg of serverJson.packages || []) {
+    if (pkg.registryType === "npm" && pkg.identifier === packageName) {
+      pkg.version = version;
+    }
+  }
+
+  fs.writeFileSync(serverJsonPath, JSON.stringify(serverJson, null, 2) + "\n");
+  console.log("Updated MCP server.json version to: " + version);
+  done();
+}
+
 function runDownloadSamples() {
   return gulp
     .src(mcreslistsamplesigs, { base: "", encoding: false })
@@ -939,7 +961,7 @@ gulp.task("mcbuild", gulp.series(gulp.parallel("clean-mcbuild", "webbuild"), bui
 
 gulp.task("mctypes", gulp.parallel(buildStable20JsonTypeDefs, buildStable10JsonTypeDefs, buildIncludes));
 
-gulp.task("updateversions", gulp.series(runUpdateVersions));
+gulp.task("updateversions", gulp.series(runUpdateVersions, runUpdateMcpServerJsonVersion));
 
 gulp.task(
   "dlres",
