@@ -1,0 +1,24 @@
+{
+  "name": "minecraft-creator-tools",
+  "owner": {
+    "name": "Mojang Studios"
+  },
+  "metadata": {
+    "description": "Official Minecraft Creator Tools plugins for AI coding agents."
+  },
+  "plugins": [
+    {
+      "name": "minecraft",
+      "source": "./plugins/minecraft",
+      "description": "Create mobs, items, blocks, and models for Minecraft Bedrock Edition add-ons, and debug add-ons that won't load or validate.",
+      "author": {
+        "name": "Mojang Studios"
+      },
+      "homepage": "https://aka.ms/mcthomepage",
+      "repository": "https://github.com/Mojang/minecraft-creator-tools",
+      "license": "MIT",
+      "category": "development",
+      "keywords": ["minecraft", "bedrock", "add-on"]
+    }
+  ]
+}

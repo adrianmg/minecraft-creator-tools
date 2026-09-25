@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "minecraft-creator-tools": {
+      "command": "npx",
+      "args": ["-y", "@minecraft/creator-tools@0.17.8", "mcp"]
+    }
+  }
+}

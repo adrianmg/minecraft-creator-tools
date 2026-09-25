@@ -213,6 +213,27 @@ Or, to make the MCP server available in all your VS Code projects, open the Comm
 
 ---
 
+## Using with Claude Code, GitHub Copilot CLI, and Codex
+
+The `minecraft` agent plugin bundles this MCP server with skills for creating mobs, items, blocks, and models, and for debugging add-ons. Install it from the Minecraft Creator Tools repository:
+
+```bash
+# Claude Code (inside a session)
+/plugin marketplace add Mojang/minecraft-creator-tools
+/plugin install minecraft@minecraft-creator-tools
+
+# GitHub Copilot CLI
+copilot plugin marketplace add Mojang/minecraft-creator-tools
+copilot plugin install minecraft@minecraft-creator-tools
+
+# Codex (then install "Minecraft" from /plugins)
+codex plugin marketplace add Mojang/minecraft-creator-tools
+```
+
+See the [plugin readme](https://github.com/Mojang/minecraft-creator-tools/tree/main/plugins/minecraft) for the list of skills.
+
+---
+
 ## Trademarks
 
 This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft trademarks or logos is subject to and must follow [Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/legal/intellectualproperty/trademarks/usage/general). Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship. Any use of third-party trademarks or logos are subject to those third-party’s policies.

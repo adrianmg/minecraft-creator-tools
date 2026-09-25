@@ -1,0 +1,13 @@
+{
+  "name": "minecraft",
+  "displayName": "Minecraft",
+  "description": "Create mobs, items, blocks, and models for Minecraft Bedrock Edition add-ons, and debug add-ons that won't load or validate, using Minecraft Creator Tools.",
+  "author": {
+    "name": "Mojang Studios",
+    "url": "https://github.com/Mojang/minecraft-creator-tools"
+  },
+  "homepage": "https://aka.ms/mcthomepage",
+  "repository": "https://github.com/Mojang/minecraft-creator-tools",
+  "license": "MIT",
+  "keywords": ["minecraft", "bedrock", "add-on", "behavior-pack", "resource-pack", "mcp"]
+}

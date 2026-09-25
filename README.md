@@ -89,6 +89,10 @@ Once packaged, you can install the command line locally via `npm install minecra
 
 See the [command-line readme](./app/jsnode/README.md) for more instructions on using the command line.
 
+## AI Coding Agents
+
+The `minecraft` plugin in [plugins/minecraft](./plugins/minecraft/README.md) adds skills and the Creator Tools MCP server to Claude Code, GitHub Copilot CLI, and Codex, so agents can create mobs, items, blocks, and models, and debug add-ons. See its readme for the list of skills and install commands.
+
 ## Trademarks
 
 This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft trademarks or logos is subject to and must follow [Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/legal/intellectualproperty/trademarks/usage/general). Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship. Any use of third-party trademarks or logos are subject to those third-party’s policies.

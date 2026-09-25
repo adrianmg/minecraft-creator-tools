@@ -1,0 +1,20 @@
+{
+  "name": "minecraft-creator-tools",
+  "interface": {
+    "displayName": "Minecraft Creator Tools"
+  },
+  "plugins": [
+    {
+      "name": "minecraft",
+      "source": {
+        "source": "local",
+        "path": "./plugins/minecraft"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

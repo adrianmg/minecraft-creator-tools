@@ -36,6 +36,8 @@ Note: most project work is in the `app` folder.
 - `app/toolbuild/`: Build output folder for the JSNode and VSCode versions of the application
 - `app/site/`: Folder with modifications to index.html when hosted on mctools.dev (adds cookie and analytics scripts)
 - `app/reslist/`: Contains JSON metadata for how to include additional resources into MCTools at build time
+- `plugins/minecraft/`: Agent plugin (skills plus the MCP server config) for Claude Code, Copilot CLI, and Codex. Marketplace listings are in `.claude-plugin/` and `.agents/plugins/`. See `docs/AgentPluginAndSkills.md`.
+- `plugins/evals/`: Eval prompts and fixture add-ons for the plugin's skills
 - Code within `app/public/data/forms` and `app/src/minecraft/json` is generated from the `app/src/minecraft/` folder. Do not edit or comment on files in these directories directly.
 
 ## Testing Strategy

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "minecraft",
+  "description": "Create mobs, items, blocks, and models for Minecraft Bedrock Edition add-ons, and debug add-ons that won't load or validate, using Minecraft Creator Tools.",
+  "author": {
+    "name": "Mojang Studios",
+    "url": "https://github.com/Mojang/minecraft-creator-tools"
+  },
+  "homepage": "https://aka.ms/mcthomepage",
+  "repository": "https://github.com/Mojang/minecraft-creator-tools",
+  "license": "MIT",
+  "keywords": ["minecraft", "bedrock", "add-on", "behavior-pack", "resource-pack", "mcp"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Minecraft",
+        "shortDescription": "Create and debug Minecraft Bedrock add-ons",
+        "longDescription": "Skills and the Minecraft Creator Tools MCP server for creating mobs, items, blocks, and 3D models for Minecraft Bedrock Edition add-ons, and for finding and fixing problems that stop an add-on from loading or validating.",
+        "developerName": "Mojang Studios",
+        "category": "Developer Tools",
+        "capabilities": ["Interactive", "Read", "Write"],
+        "websiteURL": "https://aka.ms/mcthomepage",
+        "defaultPrompt": [
+          "Create a hostile swamp goblin that spawns in swamps at night",
+          "Why won't my add-on load?",
+          "Add a glowing mushroom block that drops mushrooms when mined"
+        ]
+      }
+    }
+  }
+}

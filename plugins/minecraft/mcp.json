@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "minecraft-creator-tools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@minecraft/creator-tools@0.17.8", "mcp"]
+    }
+  }
+}
