@@ -47,6 +47,112 @@ export default class Lang {
     return Object.keys(this.tokens);
   }
 
+  /**
+   * Parses the `key=value` lines of a .lang file into a key → value map. Comment-only
+   * lines are skipped; trailing `#` comments are removed from values.
+   */
+  static parseEntries(content: string): Map<string, string> {
+    const entries = new Map<string, string>();
+
+    for (let line of content.replace(/^\uFEFF/, "").split(/\r?\n/)) {
+      line = line.trim();
+
+      if (line.length === 0 || line.startsWith("#")) {
+        continue;
+      }
+
+      const equalsIndex = line.indexOf("=");
+
+      if (equalsIndex > 0) {
+        const key = line.substring(0, equalsIndex).trim();
+        let value = line.substring(equalsIndex + 1);
+        const hashIndex = value.indexOf("#");
+
+        if (hashIndex >= 0) {
+          value = value.substring(0, hashIndex);
+        }
+
+        if (!entries.has(key)) {
+          entries.set(key, value.trim());
+        }
+      }
+    }
+
+    return entries;
+  }
+
+  /**
+   * Appends any of `entries` whose key isn't already defined to the text of a .lang file.
+   * Existing lines are left byte-for-byte unchanged, so existing keys keep their values;
+   * keys that exist with a different value are reported in `kept`.
+   */
+  static appendMissingEntries(
+    existingContent: string | undefined,
+    entries: { key: string; value: string }[]
+  ): { content: string; added: string[]; kept: { key: string; existingValue: string; newValue: string }[] } {
+    const content = existingContent ?? "";
+    const existing = Lang.parseEntries(content);
+    const newline = content.includes("\r\n") ? "\r\n" : "\n";
+    const added: string[] = [];
+    const kept: { key: string; existingValue: string; newValue: string }[] = [];
+    const linesToAdd: string[] = [];
+
+    for (const entry of entries) {
+      const key = entry.key.trim();
+      const value = entry.value.replace(/[\r\n]+/g, " ").trim();
+
+      if (key.length === 0 || added.includes(key)) {
+        continue;
+      }
+
+      const existingValue = existing.get(key);
+
+      if (existingValue !== undefined) {
+        if (existingValue !== value) {
+          kept.push({ key, existingValue, newValue: value });
+        }
+        continue;
+      }
+
+      added.push(key);
+      linesToAdd.push(`${key}=${value}`);
+    }
+
+    if (linesToAdd.length === 0) {
+      return { content, added, kept };
+    }
+
+    let prefix = content;
+
+    if (prefix.length > 0 && !prefix.endsWith("\n")) {
+      prefix += newline;
+    }
+
+    return { content: prefix + linesToAdd.join(newline) + newline, added, kept };
+  }
+
+  /**
+   * Returns updated texts/languages.json content that includes `language`, or undefined when
+   * no change is needed (or the existing content isn't a JSON array we can safely extend).
+   */
+  static addLanguageToLanguagesJson(existingContent: string | undefined, language: string): string | undefined {
+    if (existingContent === undefined || existingContent.trim().length === 0) {
+      return JSON.stringify([language], null, 2);
+    }
+
+    try {
+      const languages = JSON.parse(existingContent.replace(/^\uFEFF/, ""));
+
+      if (!Array.isArray(languages) || languages.includes(language)) {
+        return undefined;
+      }
+
+      return JSON.stringify([...languages, language], null, 2);
+    } catch {
+      return undefined;
+    }
+  }
+
   static async ensureOnFile(file: IFile, loadHandler?: IEventHandler<Lang, Lang>) {
     let lang: Lang | undefined;
 

@@ -84,6 +84,18 @@ export interface IGeneratedContent {
   /** Manifest for resource pack */
   resourcePackManifest?: IGeneratedFile;
 
+  /** Placeholder pack_icon.png for the behavior pack (writers must never overwrite an existing icon) */
+  behaviorPackIcon?: IGeneratedFile;
+
+  /** Placeholder pack_icon.png for the resource pack (writers must never overwrite an existing icon) */
+  resourcePackIcon?: IGeneratedFile;
+
+  /**
+   * Localization entries for the resource pack's texts/en_US.lang (entity, spawn egg, and block
+   * names). Writers should append missing keys and never change keys that already exist.
+   */
+  langEntries: ILangEntry[];
+
   /** Entity behavior files (behavior_packs/entities/) */
   entityBehaviors: IGeneratedFile[];
 
@@ -166,6 +178,17 @@ export interface IGeneratedFile {
 
   /** Which pack this belongs to */
   pack: "behavior" | "resource" | "world" | "none";
+
+  /** ID of the definition this file was generated from, when one definition produces several files (features) */
+  sourceId?: string;
+}
+
+/**
+ * A single `key=value` localization entry.
+ */
+export interface ILangEntry {
+  key: string;
+  value: string;
 }
 
 /**
@@ -977,6 +1000,7 @@ export class ContentGenerator {
       geometries: [],
       renderControllers: [],
       sounds: [],
+      langEntries: [],
       summary: {
         namespace: this._namespace,
         entityCount: 0,
@@ -999,13 +1023,14 @@ export class ContentGenerator {
     result.resourcePackManifest = this._generateResourceManifest();
     const rpHeaderUuid = (result.resourcePackManifest.content as any)?.header?.uuid;
     result.behaviorPackManifest = this._generateBehaviorManifest(rpHeaderUuid);
+    result.behaviorPackIcon = this._generatePackIcon("behavior");
+    result.resourcePackIcon = this._generatePackIcon("resource");
 
     // Generate entities
     if (this._definition.entityTypes) {
       for (const entity of this._definition.entityTypes) {
         await this._generateEntity(entity, result);
       }
-      result.summary.entityCount = this._definition.entityTypes.length;
     }
 
     // Generate blocks
@@ -1013,7 +1038,6 @@ export class ContentGenerator {
       for (const block of this._definition.blockTypes) {
         await this._generateBlock(block, result);
       }
-      result.summary.blockCount = this._definition.blockTypes.length;
     }
 
     // Generate items
@@ -1021,7 +1045,6 @@ export class ContentGenerator {
       for (const item of this._definition.itemTypes) {
         await this._generateItem(item, result);
       }
-      result.summary.itemCount = this._definition.itemTypes.length;
     }
 
     // Generate loot tables
@@ -1029,7 +1052,6 @@ export class ContentGenerator {
       for (const lootTable of this._definition.lootTables) {
         this._generateLootTable(lootTable, result);
       }
-      result.summary.lootTableCount = this._definition.lootTables.length;
     }
 
     // Generate recipes
@@ -1037,7 +1059,6 @@ export class ContentGenerator {
       for (const recipe of this._definition.recipes) {
         this._generateRecipe(recipe, result);
       }
-      result.summary.recipeCount = this._definition.recipes.length;
     }
 
     // Generate spawn rules
@@ -1045,15 +1066,25 @@ export class ContentGenerator {
       for (const spawnRule of this._definition.spawnRules) {
         this._generateSpawnRule(spawnRule, result);
       }
-      result.summary.spawnRuleCount = this._definition.spawnRules.length;
     }
 
-    // Generate features
+    // Generate features. A single feature definition can produce several files
+    // (scatter feature + placed feature + feature rule), so tag them with their
+    // source ID and count definitions that produced output.
     if (this._definition.features) {
       for (const feature of this._definition.features) {
+        const featureStart = result.features.length;
+        const featureRuleStart = result.featureRules.length;
         this._generateFeature(feature, result);
+
+        const featureFiles = [...result.features.slice(featureStart), ...result.featureRules.slice(featureRuleStart)];
+        for (const file of featureFiles) {
+          file.sourceId = feature.id;
+        }
+        if (featureFiles.length > 0) {
+          result.summary.featureCount++;
+        }
       }
-      result.summary.featureCount = this._definition.features.length;
     }
 
     // Generate structures
@@ -1061,7 +1092,6 @@ export class ContentGenerator {
       for (const structure of this._definition.structures) {
         await this._generateStructure(structure, result);
       }
-      result.summary.structureCount = this._definition.structures.length;
     }
 
     // Generate terrain_texture.json for blocks
@@ -1075,11 +1105,92 @@ export class ContentGenerator {
       result.itemTextures = this._generateItemTextures(this._definition.itemTypes);
     }
 
+    this._generateLocalization(result);
+
+    // Counts reflect what was actually generated (e.g., loot tables and spawn rules
+    // produced from inline entity/block `drops` and `spawning`), not how many
+    // top-level definitions were supplied.
+    result.summary.entityCount = result.entityBehaviors.length;
+    result.summary.blockCount = result.blockBehaviors.length;
+    result.summary.itemCount = result.itemBehaviors.length;
+    result.summary.lootTableCount = result.lootTables.length;
+    result.summary.recipeCount = result.recipes.length;
+    result.summary.spawnRuleCount = result.spawnRules.length;
+    result.summary.structureCount = result.structures.length;
     result.summary.textureCount = result.textures.length;
     result.summary.warnings = this._warnings;
     result.summary.errors = this._errors;
 
     return result;
+  }
+
+  // ============================================================================
+  // PACK ICONS
+  // ============================================================================
+
+  /**
+   * Generates a 64x64 placeholder pack_icon.png. Pack icons must be square with a
+   * power-of-two size, otherwise validation reports CPACKICON on every new project.
+   */
+  private _generatePackIcon(pack: "behavior" | "resource"): IGeneratedFile {
+    const png =
+      pack === "behavior"
+        ? PngEncoder.createCheckerboardPng(64, 64, "#5B8C3A", "#3F6628", 16)
+        : PngEncoder.createCheckerboardPng(64, 64, "#3A6E9E", "#284D70", 16);
+
+    return {
+      path: "pack_icon.png",
+      pack,
+      type: "png",
+      content: png ?? PngEncoder.getPlaceholderTexture("entity"),
+    };
+  }
+
+  // ============================================================================
+  // LOCALIZATION
+  // ============================================================================
+
+  /**
+   * Makes display names reach the game: entity/spawn egg/block names become
+   * texts/en_US.lang entries, and items get a minecraft:display_name component
+   * (unless one was supplied via native components).
+   */
+  private _generateLocalization(result: IGeneratedContent): void {
+    const getDescription = (file: IGeneratedFile, rootKey: string) => (file.content as any)?.[rootKey]?.description;
+    const findFile = (files: IGeneratedFile[], rootKey: string, identifier: string) =>
+      files.find((file) => getDescription(file, rootKey)?.identifier === identifier);
+
+    for (const entity of this._definition.entityTypes || []) {
+      const fullId = `${this._namespace}:${entity.id}`;
+      const file = findFile(result.entityBehaviors, "minecraft:entity", fullId);
+      if (!file || !entity.displayName) {
+        continue;
+      }
+
+      result.langEntries.push({ key: `entity.${fullId}.name`, value: entity.displayName });
+      if (getDescription(file, "minecraft:entity")?.is_spawnable === true) {
+        result.langEntries.push({
+          key: `item.spawn_egg.entity.${fullId}.name`,
+          value: `${entity.displayName} Spawn Egg`,
+        });
+      }
+    }
+
+    for (const block of this._definition.blockTypes || []) {
+      const fullId = `${this._namespace}:${block.id}`;
+      if (block.displayName && findFile(result.blockBehaviors, "minecraft:block", fullId)) {
+        result.langEntries.push({ key: `tile.${fullId}.name`, value: block.displayName });
+      }
+    }
+
+    for (const item of this._definition.itemTypes || []) {
+      const fullId = `${this._namespace}:${item.id}`;
+      const file = findFile(result.itemBehaviors, "minecraft:item", fullId);
+      const components = file ? (file.content as any)["minecraft:item"]?.components : undefined;
+      if (item.displayName && components && components["minecraft:display_name"] === undefined) {
+        components["minecraft:display_name"] = { value: item.displayName };
+      }
+    }
   }
 
   // ============================================================================
@@ -3029,6 +3140,10 @@ export class ContentGenerator {
           content: feature.nativeFeatureRule,
         });
       }
+    } else {
+      this._warnings.push(
+        `Feature '${feature.id}': no files were generated. Provide 'spread' (recommended) or 'nativeFeature'.`
+      );
     }
   }
 

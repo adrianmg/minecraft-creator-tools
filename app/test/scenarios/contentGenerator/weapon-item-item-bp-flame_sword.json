@@ -19,7 +19,10 @@
       },
       "minecraft:can_destroy_in_creative": false,
       "minecraft:glint": true,
-      "minecraft:icon": "test:flame_sword"
+      "minecraft:icon": "test:flame_sword",
+      "minecraft:display_name": {
+        "value": "Flame Sword"
+      }
     }
   }
 }

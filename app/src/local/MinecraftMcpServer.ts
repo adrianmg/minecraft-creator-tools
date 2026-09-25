@@ -38,7 +38,9 @@ import { ModelTemplateType, getAvailableTemplateTypes, getModelTemplateAsync } f
 import StructureUtilities from "../minecraft/StructureUtilities";
 import { IBlockVolume } from "../minecraft/IBlockVolume";
 import { MinecraftContentSchema } from "../minecraft/ContentMetaSchemaZod";
-import { ContentGenerator } from "../minecraft/ContentGenerator";
+import { ContentGenerator, IGeneratedContent, IGeneratedFile, ILangEntry } from "../minecraft/ContentGenerator";
+import { findUnrecognizedKeys, preserveUnknownKeys } from "../core/ZodUtilities";
+import Lang from "../minecraft/Lang";
 import ContentSchemaInferrer, { IInferrerOptions } from "../minecraft/ContentSchemaInferrer";
 import PlaywrightPageRenderer from "./PlaywrightPageRenderer";
 import ImageGenerationUtilities from "./ImageGenerationUtilities";
@@ -1024,28 +1026,38 @@ export default class MinecraftMcpServer {
   /**
    * Creates Minecraft content from a meta-schema definition.
    * This is a simplified, AI-friendly format that generates all required files.
+   *
+   * Safe to run repeatedly against an existing project: existing files (including pack
+   * manifests and icons) are never overwritten, and the response lists every file that
+   * was skipped as well as any input keys that were not recognized and therefore ignored.
+   *
+   * `definition` is the caller's raw input (see preserveUnknownKeys at tool registration),
+   * so it is re-validated here.
    */
-  async _createMinecraftContentOp(args: {
-    definition: z.infer<typeof MinecraftContentSchema>;
-    outputPath: string;
-  }): Promise<CallToolResult> {
+  async _createMinecraftContentOp(args: { definition: unknown; outputPath: string }): Promise<CallToolResult> {
     if (!this._creatorTools) {
       throw new Error("Creator Tools is not initialized");
     }
 
     try {
+      // Zod silently strips keys it doesn't recognize (e.g. a top-level `damage` on an item).
+      // Report them so callers know that part of their input had no effect.
+      const unrecognizedKeys = findUnrecognizedKeys(MinecraftContentSchema, args.definition);
+      const unrecognizedKeyWarnings = MinecraftMcpServer._describeUnrecognizedKeys(unrecognizedKeys);
+
       // Validate the definition
       const parseResult = MinecraftContentSchema.safeParse(args.definition);
       if (!parseResult.success) {
+        let errorText = `Validation error: ${parseResult.error.errors
+          .map((e) => `${e.path.join(".")}: ${e.message}`)
+          .join(", ")}`;
+
+        if (unrecognizedKeyWarnings.length > 0) {
+          errorText += `\n\nWarnings:\n${unrecognizedKeyWarnings.map((w) => `- ${w}`).join("\n")}`;
+        }
+
         return {
-          content: [
-            {
-              type: "text",
-              text: `Validation error: ${parseResult.error.errors
-                .map((e) => `${e.path.join(".")}: ${e.message}`)
-                .join(", ")}`,
-            },
-          ],
+          content: [{ type: "text", text: errorText }],
         };
       }
 
@@ -1077,7 +1089,10 @@ export default class MinecraftMcpServer {
       let rpBasePath = path.join(projectRoot, "resource_packs", namespace);
 
       const existingBpFolder = MinecraftMcpServer._findExistingPackFolder(path.join(projectRoot, "behavior_packs"));
-      const existingRpFolder = MinecraftMcpServer._findExistingPackFolder(path.join(projectRoot, "resource_packs"));
+      const existingRpFolder = MinecraftMcpServer._findExistingResourcePackFolder(
+        path.join(projectRoot, "resource_packs"),
+        existingBpFolder
+      );
 
       if (existingBpFolder) {
         bpBasePath = existingBpFolder;
@@ -1086,11 +1101,12 @@ export default class MinecraftMcpServer {
         rpBasePath = existingRpFolder;
       }
 
-      // Write generated files
       const filesWritten: string[] = [];
+      const filesSkipped: string[] = [];
+      const warnings: string[] = [...generated.summary.warnings, ...unrecognizedKeyWarnings];
 
-      // Helper to write files
-      const writeFile = (file: { path: string; pack: string; type: string; content: object | string | Uint8Array }) => {
+      // Helper to write files. Returns true only when the file was newly written.
+      const writeFile = (file: IGeneratedFile, reportSkipped: boolean = true): boolean => {
         let basePath = projectRoot;
         if (file.pack === "behavior") {
           basePath = bpBasePath;
@@ -1104,19 +1120,24 @@ export default class MinecraftMcpServer {
         // Prevent path traversal: ensure the resolved path stays within the output directory
         if (!fullPath.startsWith(resolvedOutputPath + path.sep) && fullPath !== resolvedOutputPath) {
           Log.error("Skipping file with path traversal outside output directory: " + file.path);
-          return;
+          return false;
+        }
+
+        // Do not overwrite files that already exist (e.g., files created by
+        // designModel, a previous run, or manually by the user). Only write new files,
+        // but tell the caller which ones were left alone so they know their changes
+        // to those files were not applied.
+        if (fs.existsSync(fullPath)) {
+          if (reportSkipped) {
+            filesSkipped.push(fullPath);
+          }
+          return false;
         }
 
         const dirPath = path.dirname(fullPath);
 
         if (!fs.existsSync(dirPath)) {
           fs.mkdirSync(dirPath, { recursive: true });
-        }
-
-        // Do not overwrite files that already exist (e.g., files created by
-        // designModel or manually by the user). Only write new files.
-        if (fs.existsSync(fullPath)) {
-          return;
         }
 
         if (file.type === "json") {
@@ -1133,31 +1154,35 @@ export default class MinecraftMcpServer {
         }
 
         filesWritten.push(fullPath);
+        return true;
       };
+      const writeFiles = (files: IGeneratedFile[]) => files.filter((file) => writeFile(file));
 
-      // Write all generated files — but preserve existing manifest UUIDs
-      // and merge texture atlas files rather than overwriting them.
-      if (generated.behaviorPackManifest) {
-        MinecraftMcpServer._writeManifestPreservingUuids(bpBasePath, generated.behaviorPackManifest, filesWritten);
+      // Existing manifests are preserved as-is (names, descriptions, UUIDs, versions,
+      // dependencies); only missing packs get a new manifest.
+      MinecraftMcpServer._ensurePackManifests(bpBasePath, rpBasePath, generated, filesWritten, filesSkipped, warnings);
+
+      // Placeholder icons for packs that don't have one yet. Never overwrite an existing icon.
+      if (generated.behaviorPackIcon) {
+        writeFile(generated.behaviorPackIcon, false);
       }
-      if (generated.resourcePackManifest) {
-        MinecraftMcpServer._writeManifestPreservingUuids(rpBasePath, generated.resourcePackManifest, filesWritten);
+      if (generated.resourcePackIcon) {
+        writeFile(generated.resourcePackIcon, false);
       }
 
-      for (const file of generated.entityBehaviors) writeFile(file);
-      for (const file of generated.entityResources) writeFile(file);
-      for (const file of generated.blockBehaviors) writeFile(file);
-      for (const file of generated.blockResources) writeFile(file);
-      for (const file of generated.itemBehaviors) writeFile(file);
-      for (const file of generated.itemResources) writeFile(file);
-      for (const file of generated.lootTables) writeFile(file);
-      for (const file of generated.recipes) writeFile(file);
-      for (const file of generated.spawnRules) writeFile(file);
-      for (const file of generated.features) writeFile(file);
-      for (const file of generated.featureRules) writeFile(file);
-      for (const file of generated.textures) writeFile(file);
-      for (const file of generated.geometries) writeFile(file);
-      for (const file of generated.renderControllers) writeFile(file);
+      const writtenEntities = writeFiles(generated.entityBehaviors);
+      writeFiles(generated.entityResources);
+      const writtenBlocks = writeFiles(generated.blockBehaviors);
+      writeFiles(generated.blockResources);
+      const writtenItems = writeFiles(generated.itemBehaviors);
+      writeFiles(generated.itemResources);
+      const writtenLootTables = writeFiles(generated.lootTables);
+      const writtenRecipes = writeFiles(generated.recipes);
+      const writtenSpawnRules = writeFiles(generated.spawnRules);
+      const writtenFeatureFiles = [...writeFiles(generated.features), ...writeFiles(generated.featureRules)];
+      writeFiles(generated.textures);
+      writeFiles(generated.geometries);
+      writeFiles(generated.renderControllers);
 
       // Merge singleton resource pack files: these are pack-wide catalogs where
       // each MCP call should ADD entries rather than overwrite the entire file.
@@ -1182,20 +1207,57 @@ export default class MinecraftMcpServer {
         MinecraftMcpServer._writeSingletonJsonMerging(rpBasePath, file, filesWritten);
       }
 
+      // Localization: append new keys to texts/en_US.lang; never change existing keys.
+      const langResult = MinecraftMcpServer._writeLangEntries(rpBasePath, generated.langEntries, filesWritten);
+      for (const kept of langResult.kept) {
+        warnings.push(
+          `texts/en_US.lang already defines "${kept.key}" as "${kept.existingValue}"; it was kept ` +
+            `(requested "${kept.newValue}"). Edit the lang file to rename it.`
+        );
+      }
+
+      // Counts reflect what was actually written in this call.
+      const written = {
+        entityTypes: writtenEntities.length,
+        blockTypes: writtenBlocks.length,
+        itemTypes: writtenItems.length,
+        lootTables: writtenLootTables.length,
+        recipes: writtenRecipes.length,
+        spawnRules: writtenSpawnRules.length,
+        features: new Set(writtenFeatureFiles.map((file) => file.sourceId ?? file.path)).size,
+        langEntries: langResult.added.length,
+      };
+
       // Build summary
       const summary = generated.summary;
-      let summaryText = `Generated ${filesWritten.length} files for namespace "${summary.namespace}":\n`;
-      summaryText += `- ${summary.entityCount} entity types\n`;
-      summaryText += `- ${summary.blockCount} block types\n`;
-      summaryText += `- ${summary.itemCount} item types\n`;
-      summaryText += `- ${summary.lootTableCount} loot tables\n`;
-      summaryText += `- ${summary.recipeCount} recipes\n`;
-      summaryText += `- ${summary.spawnRuleCount} spawn rules\n`;
-      summaryText += `- ${summary.featureCount} features\n`;
+      let summaryText = `Wrote ${filesWritten.length} files for namespace "${summary.namespace}":\n`;
+      summaryText += `- ${written.entityTypes} entity types\n`;
+      summaryText += `- ${written.blockTypes} block types\n`;
+      summaryText += `- ${written.itemTypes} item types\n`;
+      summaryText += `- ${written.lootTables} loot tables\n`;
+      summaryText += `- ${written.recipes} recipes\n`;
+      summaryText += `- ${written.spawnRules} spawn rules\n`;
+      summaryText += `- ${written.features} features\n`;
+      summaryText += `- ${written.langEntries} localization entries\n`;
       summaryText += `\nProject root: ${projectRoot}\n(${resolved.reason})\n`;
 
-      if (summary.warnings.length > 0) {
-        summaryText += `\nWarnings:\n${summary.warnings.map((w) => `- ${w}`).join("\n")}`;
+      if (filesSkipped.length > 0) {
+        const maxListed = 50;
+        summaryText +=
+          `\nSkipped ${filesSkipped.length} files that already existed. They were NOT modified, so any ` +
+          `changes to them in this definition were not applied (edit or delete them to apply changes):\n`;
+        summaryText += filesSkipped
+          .slice(0, maxListed)
+          .map((file) => `- ${path.relative(projectRoot, file)}`)
+          .join("\n");
+        if (filesSkipped.length > maxListed) {
+          summaryText += `\n- ...and ${filesSkipped.length - maxListed} more (see structuredContent.filesSkipped)`;
+        }
+        summaryText += "\n";
+      }
+
+      if (warnings.length > 0) {
+        summaryText += `\nWarnings:\n${warnings.map((w) => `- ${w}`).join("\n")}`;
       }
 
       if (summary.errors.length > 0) {
@@ -1206,6 +1268,10 @@ export default class MinecraftMcpServer {
         content: [{ type: "text", text: summaryText }],
         structuredContent: {
           filesWritten,
+          filesSkipped,
+          unrecognizedKeys,
+          warnings,
+          written,
           projectRoot,
           projectRootReason: resolved.reason,
           summary: generated.summary,
@@ -1216,6 +1282,75 @@ export default class MinecraftMcpServer {
         content: [{ type: "text", text: `Error generating content: ${error}` }],
       };
     }
+  }
+
+  /**
+   * Turns unrecognized key paths into caller-facing warnings. The keys were stripped by
+   * schema parsing, so their values had no effect on the generated content.
+   */
+  private static _describeUnrecognizedKeys(keys: string[]): string[] {
+    const maxListed = 50;
+    const warnings = keys
+      .slice(0, maxListed)
+      .map(
+        (key) =>
+          `Unrecognized key "${key}" was ignored (it is not part of the createMinecraftContent schema; ` +
+          `check the field name, or use native 'components' for raw Minecraft JSON).`
+      );
+
+    if (keys.length > maxListed) {
+      warnings.push(
+        `...and ${keys.length - maxListed} more unrecognized keys (see structuredContent.unrecognizedKeys).`
+      );
+    }
+
+    return warnings;
+  }
+
+  /**
+   * Reads and parses a JSON file, returning undefined if it is missing or malformed.
+   */
+  private static _readJsonFile(filePath: string): any | undefined {
+    try {
+      return JSON.parse(fs.readFileSync(filePath, "utf-8").replace(/^\uFEFF/, ""));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Like _findExistingPackFolder, but prefers the resource pack that the given behavior
+   * pack already depends on, so content lands in the pack that actually loads with it.
+   */
+  private static _findExistingResourcePackFolder(
+    containerPath: string,
+    behaviorPackFolder: string | undefined
+  ): string | undefined {
+    const bpManifest = behaviorPackFolder
+      ? MinecraftMcpServer._readJsonFile(path.join(behaviorPackFolder, "manifest.json"))
+      : undefined;
+    const dependencyUuids = new Set<string>(
+      Array.isArray(bpManifest?.dependencies)
+        ? bpManifest.dependencies.map((dep: any) => dep?.uuid).filter((uuid: unknown) => typeof uuid === "string")
+        : []
+    );
+
+    if (dependencyUuids.size > 0 && fs.existsSync(containerPath)) {
+      try {
+        for (const entry of fs.readdirSync(containerPath, { withFileTypes: true })) {
+          if (entry.isDirectory()) {
+            const manifest = MinecraftMcpServer._readJsonFile(path.join(containerPath, entry.name, "manifest.json"));
+            if (typeof manifest?.header?.uuid === "string" && dependencyUuids.has(manifest.header.uuid)) {
+              return path.join(containerPath, entry.name);
+            }
+          }
+        }
+      } catch {
+        // Fall back to the first pack below
+      }
+    }
+
+    return MinecraftMcpServer._findExistingPackFolder(containerPath);
   }
 
   /**
@@ -1386,56 +1521,130 @@ export default class MinecraftMcpServer {
   }
 
   /**
-   * Writes a manifest.json file, but preserves the UUIDs from any existing manifest
-   * at the same location. This prevents breaking worlds that already reference the pack
-   * when content is added across multiple MCP calls.
+   * Ensures both packs have a manifest.json without disturbing existing ones.
+   *
+   * - An existing manifest is never rewritten: its name, description, UUIDs, versions,
+   *   modules, and dependencies are all preserved (previously a re-run reset the names and
+   *   replaced the behavior pack's dependency with a UUID that matched no pack).
+   * - A missing manifest is created from the generated one. A new behavior pack depends on
+   *   the resource pack that is actually on disk (new or existing).
+   * - The only change ever made to an existing manifest is adding a missing dependency from
+   *   the behavior pack on its sibling resource pack, without which Bedrock won't load the
+   *   resource pack alongside it.
    */
-  private static _writeManifestPreservingUuids(
-    packBasePath: string,
-    manifestFile: { path: string; pack: string; type: string; content: object | string | Uint8Array },
-    filesWritten: string[]
+  private static _ensurePackManifests(
+    bpBasePath: string,
+    rpBasePath: string,
+    generated: IGeneratedContent,
+    filesWritten: string[],
+    filesSkipped: string[],
+    warnings: string[]
   ) {
-    const fullPath = path.join(packBasePath, manifestFile.path);
-    const dirPath = path.dirname(fullPath);
+    const writeJson = (fullPath: string, content: object) => {
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, JSON.stringify(content, null, 2), "utf-8");
+      filesWritten.push(fullPath);
+    };
 
-    if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
+    const rpManifestPath = path.join(rpBasePath, "manifest.json");
+    const bpManifestPath = path.join(bpBasePath, "manifest.json");
+
+    let rpHeader: any = undefined;
+
+    if (fs.existsSync(rpManifestPath)) {
+      filesSkipped.push(rpManifestPath);
+      const existingRp = MinecraftMcpServer._readJsonFile(rpManifestPath);
+      rpHeader = existingRp?.header;
+      if (!existingRp) {
+        warnings.push(`Existing resource pack manifest ${rpManifestPath} could not be parsed; it was left unchanged.`);
+      }
+    } else if (generated.resourcePackManifest) {
+      const rpManifest = generated.resourcePackManifest.content as any;
+      writeJson(rpManifestPath, rpManifest);
+      rpHeader = rpManifest.header;
     }
 
-    const newManifest = manifestFile.content as any;
-
-    // If an existing manifest is present, preserve its header UUID, module UUIDs, and dependencies
-    if (fs.existsSync(fullPath)) {
-      try {
-        const existing = JSON.parse(fs.readFileSync(fullPath, "utf-8"));
-
-        if (existing.header?.uuid) {
-          newManifest.header.uuid = existing.header.uuid;
+    const rpUuid: string | undefined = typeof rpHeader?.uuid === "string" ? rpHeader.uuid : undefined;
+    const rpDependency = rpUuid
+      ? {
+          uuid: rpUuid,
+          version:
+            Array.isArray(rpHeader.version) || typeof rpHeader.version === "string" ? rpHeader.version : [1, 0, 0],
         }
-        if (existing.header?.version) {
-          newManifest.header.version = existing.header.version;
-        }
+      : undefined;
 
-        // Preserve module UUIDs
-        if (existing.modules && Array.isArray(existing.modules) && newManifest.modules) {
-          for (let i = 0; i < Math.min(existing.modules.length, newManifest.modules.length); i++) {
-            if (existing.modules[i]?.uuid) {
-              newManifest.modules[i].uuid = existing.modules[i].uuid;
-            }
-          }
-        }
+    if (fs.existsSync(bpManifestPath)) {
+      const existingBp = MinecraftMcpServer._readJsonFile(bpManifestPath);
 
-        // Preserve dependencies (they contain cross-pack UUID references)
-        if (existing.dependencies && !newManifest.dependencies) {
-          newManifest.dependencies = existing.dependencies;
-        }
-      } catch {
-        // If existing manifest is malformed, just write the new one
+      if (!existingBp || typeof existingBp !== "object") {
+        filesSkipped.push(bpManifestPath);
+        warnings.push(`Existing behavior pack manifest ${bpManifestPath} could not be parsed; it was left unchanged.`);
+        return;
+      }
+
+      const dependencies = existingBp.dependencies;
+      const alreadyLinked =
+        Array.isArray(dependencies) && dependencies.some((dep: any) => dep && dep.uuid === rpDependency?.uuid);
+
+      if (!rpDependency || alreadyLinked || (dependencies !== undefined && !Array.isArray(dependencies))) {
+        filesSkipped.push(bpManifestPath);
+        return;
+      }
+
+      existingBp.dependencies = [...(dependencies ?? []), rpDependency];
+      writeJson(bpManifestPath, existingBp);
+      warnings.push(
+        `Added a dependency on resource pack ${rpDependency.uuid} to the existing behavior pack manifest ` +
+          `(everything else in it was preserved) so the resource pack loads with the behavior pack.`
+      );
+    } else if (generated.behaviorPackManifest) {
+      const bpManifest = { ...(generated.behaviorPackManifest.content as any) };
+      if (rpDependency) {
+        bpManifest.dependencies = [rpDependency];
+      } else {
+        delete bpManifest.dependencies;
+      }
+      writeJson(bpManifestPath, bpManifest);
+    }
+  }
+
+  /**
+   * Appends localization entries to the resource pack's texts/en_US.lang (creating it if
+   * needed) and makes sure texts/languages.json lists en_US. Existing keys are never
+   * changed; keys that already exist with a different value are returned in `kept`.
+   */
+  private static _writeLangEntries(
+    rpBasePath: string,
+    entries: ILangEntry[] | undefined,
+    filesWritten: string[]
+  ): { added: string[]; kept: { key: string; existingValue: string; newValue: string }[] } {
+    if (!entries || entries.length === 0) {
+      return { added: [], kept: [] };
+    }
+
+    const textsPath = path.join(rpBasePath, "texts");
+    const langPath = path.join(textsPath, "en_US.lang");
+    const languagesPath = path.join(textsPath, "languages.json");
+
+    const existingLang = fs.existsSync(langPath) ? fs.readFileSync(langPath, "utf-8") : undefined;
+    const merged = Lang.appendMissingEntries(existingLang, entries);
+
+    if (merged.added.length > 0) {
+      fs.mkdirSync(textsPath, { recursive: true });
+      fs.writeFileSync(langPath, merged.content, "utf-8");
+      filesWritten.push(langPath);
+    }
+
+    if (fs.existsSync(langPath)) {
+      const existingLanguages = fs.existsSync(languagesPath) ? fs.readFileSync(languagesPath, "utf-8") : undefined;
+      const updatedLanguages = Lang.addLanguageToLanguagesJson(existingLanguages, "en_US");
+      if (updatedLanguages !== undefined) {
+        fs.writeFileSync(languagesPath, updatedLanguages, "utf-8");
+        filesWritten.push(languagesPath);
       }
     }
 
-    fs.writeFileSync(fullPath, JSON.stringify(newManifest, null, 2), "utf-8");
-    filesWritten.push(fullPath);
+    return { added: merged.added, kept: merged.kept };
   }
 
   /**
@@ -4425,9 +4634,15 @@ export default class MinecraftMcpServer {
             "The meta-schema has three layers of abstraction you can mix freely: " +
             "(1) traits \u2014 pre-packaged bundles (e.g. 'sword', 'humanoid', 'container'); " +
             "(2) simplified properties (health, damage, color, icon, etc.); " +
-            "(3) raw `components` \u2014 full escape hatch to native Minecraft JSON.",
+            "(3) raw `components` \u2014 full escape hatch to native Minecraft JSON." +
+            "\n\n" +
+            "Safe to re-run on an existing project: existing files (including manifests and pack icons) are never " +
+            "overwritten. The response lists files that already existed and were skipped (so changes to them were " +
+            "not applied) and warns about any keys in `definition` that were not recognized and were ignored.",
           inputSchema: {
-            definition: MinecraftContentSchema,
+            // preserveUnknownKeys validates exactly like MinecraftContentSchema (same JSON Schema) but
+            // hands the handler the raw input, so it can report keys that Zod would silently strip.
+            definition: preserveUnknownKeys(MinecraftContentSchema),
             outputPath: z
               .string()
               .describe(

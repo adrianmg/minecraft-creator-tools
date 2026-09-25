@@ -13,7 +13,10 @@
         "saturation_modifier": "custom",
         "can_always_eat": false
       },
-      "minecraft:icon": "mymod:goblin_stew"
+      "minecraft:icon": "mymod:goblin_stew",
+      "minecraft:display_name": {
+        "value": "Goblin Stew"
+      }
     }
   }
 }

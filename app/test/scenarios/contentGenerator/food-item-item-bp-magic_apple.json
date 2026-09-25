@@ -27,7 +27,10 @@
           }
         ]
       },
-      "minecraft:icon": "test:magic_apple"
+      "minecraft:icon": "test:magic_apple",
+      "minecraft:display_name": {
+        "value": "Magic Apple"
+      }
     }
   }
 }

@@ -18,6 +18,25 @@ For the full commit history, see [Releases](https://github.com/Mojang/minecraft-
   auto-format on every save, open the Settings panel and turn on
   "Format JSON and script on save".
 
+### Fixed
+
+- **MCP `createMinecraftContent`** is now safe to re-run on an existing project:
+  - Existing pack manifests are preserved (names, descriptions, UUIDs, versions,
+    dependencies). Previously a re-run reset both pack names and pointed the
+    behavior pack's dependency at a UUID that matched no pack.
+  - Files that already existed are left untouched and listed in the response
+    (`filesSkipped`), so callers know their changes to them were not applied.
+  - Unrecognized keys in the definition (for example `damage` directly on an
+    item) are reported as warnings (`unrecognizedKeys`) instead of being
+    silently dropped.
+  - Summary counts reflect what was written, including loot tables and spawn
+    rules produced by inline `drops`/`spawning`.
+  - New packs get a 64x64 placeholder `pack_icon.png` (existing icons are never
+    overwritten).
+  - Entity, spawn egg, and block display names are written to
+    `texts/en_US.lang` (plus `texts/languages.json`), and generated items get a
+    `minecraft:display_name` component. Existing lang keys are never changed.
+
 ## [0.16.1] (2026-04-03)
 
 - Bug fixes in the serve UX

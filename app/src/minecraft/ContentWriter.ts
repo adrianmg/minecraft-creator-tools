@@ -15,6 +15,7 @@
  *   sound_definitions.json, music_definitions.json) so that multiple generation passes
  *   accumulate entries rather than overwriting previous content
  * - Skips regular files that already exist (prevents accidental overwrites)
+ * - Appends localization keys to texts/en_US.lang without changing existing keys
  *
  * @see ContentGenerator.ts for generating IGeneratedContent
  * @see ProjectAddButton.tsx for web UI integration
@@ -22,10 +23,11 @@
  */
 
 import type IFolder from "../storage/IFolder";
-import type { IGeneratedContent, IGeneratedFile } from "./ContentGenerator";
+import type { IGeneratedContent, IGeneratedFile, ILangEntry } from "./ContentGenerator";
 import type Project from "../app/Project";
 import StorageUtilities from "../storage/StorageUtilities";
 import Log from "../core/Log";
+import Lang from "./Lang";
 
 /**
  * Extract the filename from a relative path like "entities/orc.json" → "orc.json".
@@ -78,6 +80,47 @@ function writeSingletonJsonMerging(folder: IFolder, fileName: string, newContent
 
   file.setContent(JSON.stringify(newContent, null, 2));
   StorageUtilities.invalidateParsedContent(file);
+}
+
+/**
+ * Read a text file's existing content, or undefined if the file doesn't exist yet.
+ */
+async function readExistingText(folder: IFolder, fileName: string): Promise<string | undefined> {
+  if (!folder.fileExists(fileName)) {
+    return undefined;
+  }
+
+  const file = folder.ensureFile(fileName);
+  if (!file.isContentLoaded) {
+    await file.loadContent();
+  }
+
+  return typeof file.content === "string" ? file.content : undefined;
+}
+
+/**
+ * Append localization entries to texts/en_US.lang (never changing existing keys) and make
+ * sure texts/languages.json lists en_US.
+ */
+async function appendLangEntries(rpFolder: IFolder, entries: ILangEntry[] | undefined): Promise<void> {
+  if (!entries || entries.length === 0) {
+    return;
+  }
+
+  const textsFolder = rpFolder.ensureFolder("texts");
+  if (await textsFolder.exists()) {
+    await textsFolder.load();
+  }
+
+  const merged = Lang.appendMissingEntries(await readExistingText(textsFolder, "en_US.lang"), entries);
+  if (merged.added.length > 0) {
+    textsFolder.ensureFile("en_US.lang").setContent(merged.content);
+  }
+
+  const languages = Lang.addLanguageToLanguagesJson(await readExistingText(textsFolder, "languages.json"), "en_US");
+  if (languages !== undefined) {
+    textsFolder.ensureFile("languages.json").setContent(languages);
+  }
 }
 
 export class ContentWriter {
@@ -189,6 +232,9 @@ export class ContentWriter {
         const targetFolder = pathParts.length >= 2 ? rpFolder.ensureFolder(pathParts.slice(0, -1).join("/")) : rpFolder;
         writeSingletonJsonMerging(targetFolder, getFilename(soundFile.path), soundFile.content as object);
       }
+
+      // texts/en_US.lang + texts/languages.json (append new keys, keep existing ones)
+      await appendLangEntries(rpFolder, content.langEntries);
     }
 
     await project.save();
