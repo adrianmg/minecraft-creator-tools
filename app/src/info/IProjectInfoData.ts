@@ -25,4 +25,10 @@ export default interface IProjectInfoData {
   index?: IContextIndexData;
   generatorName?: string;
   generatorVersion?: string;
+
+  /**
+   * Set on `.mcr.json` reports written by `mct validate`. A later run reuses the report only when
+   * it computes the same key; see ValidationReportCache.
+   */
+  reportCacheKey?: string;
 }

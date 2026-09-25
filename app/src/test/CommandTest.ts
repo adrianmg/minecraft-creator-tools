@@ -143,6 +143,7 @@ function createMockContext(overrides: Partial<ICommandContext> = {}): ICommandCo
     inputFolderSpecified: false,
     inputFolderAutoDiscovered: false,
     outputFolder: "/mock/output",
+    outputFolderSpecified: false,
     inputStorage: undefined as any,
     outputStorage: undefined as any,
     inputWorkFolder: undefined as any,
@@ -2102,5 +2103,97 @@ describe("resolveProjectRoot", () => {
 
   it("isProjectRoot should return false for non-existent directory", () => {
     expect(CommandContextFactory.isProjectRoot(path.join(tempBase, "nonexistent"))).to.be.false;
+  });
+});
+
+describe("validate report output options", () => {
+  const { ValidateCommand } = require("../cli/commands/validate/ValidateCommand");
+
+  const outputTypeCases: { json: boolean; outputType?: string; expected: OutputType }[] = [
+    { json: false, outputType: undefined, expected: OutputType.normal },
+    { json: false, outputType: "noreports", expected: OutputType.noReports },
+    { json: true, outputType: undefined, expected: OutputType.json },
+    { json: true, outputType: "noreports", expected: OutputType.noReports },
+    { json: true, outputType: "somethingelse", expected: OutputType.json },
+  ];
+
+  for (const testCase of outputTypeCases) {
+    it(`resolveOutputType(json=${testCase.json}, ot=${testCase.outputType}) is ${OutputType[testCase.expected]}`, () => {
+      expect(CommandContextFactory.resolveOutputType(testCase.json, testCase.outputType)).to.equal(testCase.expected);
+    });
+  }
+
+  const defaultOutputFolderCases: {
+    taskType: TaskType;
+    json: boolean;
+    outputFolderSpecified: boolean;
+    expected: boolean;
+  }[] = [
+    { taskType: TaskType.validate, json: false, outputFolderSpecified: false, expected: true },
+    { taskType: TaskType.validate, json: false, outputFolderSpecified: true, expected: true },
+    { taskType: TaskType.validate, json: true, outputFolderSpecified: false, expected: false },
+    { taskType: TaskType.validate, json: true, outputFolderSpecified: true, expected: true },
+    { taskType: TaskType.info, json: true, outputFolderSpecified: false, expected: true },
+    { taskType: TaskType.exportAddon, json: true, outputFolderSpecified: false, expected: true },
+  ];
+
+  for (const testCase of defaultOutputFolderCases) {
+    it(`usesDefaultOutputFolder(${TaskType[testCase.taskType]}, json=${testCase.json}, -o=${testCase.outputFolderSpecified}) is ${testCase.expected}`, () => {
+      expect(
+        CommandContextFactory.usesDefaultOutputFolder(testCase.taskType, testCase.json, testCase.outputFolderSpecified)
+      ).to.equal(testCase.expected);
+    });
+  }
+
+  const reportFolderCases: { inputFolder: string; outputFolder: string; expected: string | undefined }[] = [
+    { inputFolder: "/work/proj", outputFolder: "/work/out", expected: "/work/out" },
+    { inputFolder: "/work/proj", outputFolder: "/work/proj", expected: undefined },
+  ];
+
+  for (const testCase of reportFolderCases) {
+    it(`getReportOutputFolder(-i ${testCase.inputFolder}, -o ${testCase.outputFolder}) is ${testCase.expected}`, () => {
+      expect(ValidateCommand.getReportOutputFolder(testCase)).to.equal(testCase.expected);
+    });
+  }
+
+  it("passes no output folder to workers when validate --json has no explicit -o", async () => {
+    const capturedTasks: IWorkerTask<any, any>[] = [];
+    const capturingPool = {
+      concurrency: 1,
+      async execute(task: IWorkerTask<any, any>) {
+        capturedTasks.push(task);
+        return { success: true as const, result: [] };
+      },
+      async executeBatch() {
+        return [];
+      },
+      async shutdown() {},
+    } as unknown as IWorkerPool;
+
+    const mockProject = {
+      name: "proj",
+      localFilePath: undefined,
+      localFolderPath: "/work/proj",
+      accessoryFilePaths: undefined,
+    } as unknown as Project;
+
+    // CommandContextFactory resolves the output folder to the input folder in this case.
+    const context = createMockContext({
+      json: true,
+      outputFolderSpecified: false,
+      inputFolder: "/work/proj",
+      outputFolder: "/work/proj",
+      projects: [mockProject],
+      projectCount: 1,
+      isSingleProject: true,
+      workerPool: capturingPool,
+      localEnv: { displayInfo: false } as unknown as LocalEnvironment,
+    });
+
+    const validateCmd = getAllCommands().find((c) => c.metadata.name === "validate");
+    await validateCmd!.execute(context);
+
+    expect(capturedTasks).to.have.length(1);
+    expect(capturedTasks[0].args.outputFolder).to.equal(undefined);
   });
 });

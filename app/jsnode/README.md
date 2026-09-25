@@ -38,7 +38,12 @@ Use `--help` with any command for detailed usage, or `--all-commands` to see int
 ```bash
 npx mct validate -i d:\mycontent\myprojectfolder
 npx mct validate addon -i d:\mycontent\myprojectfolder -v
+npx mct validate -i d:\mycontent\myprojectfolder --json
 ```
+
+By default, `validate` writes `<name>.csv`, `<name>.report.html`, and `<name>.mcr.json` for each project to the output folder (`-o`, or `out` in the current working directory). With `--json`, results are printed to stdout and report files are only written when `-o` is given. Use `--ot noreports` to skip report files and write only content index files (`mci/`, `mch/`).
+
+An existing `<name>.mcr.json` is reused only if the project's path and files, the suite, the exclusions, and the mct version are unchanged since it was written. Use `--force` to always re-validate.
 
 ### Project
 

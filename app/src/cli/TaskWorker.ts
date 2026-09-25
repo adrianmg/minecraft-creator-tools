@@ -19,6 +19,7 @@ import ZipStorage from "../storage/ZipStorage";
 import ImageCodecNode from "../local/ImageCodecNode";
 import ProfilerWrapper from "./ProfilerWrapper";
 import { ProjectItemType } from "../app/IProjectItemData";
+import ValidationReportCache from "./ValidationReportCache";
 
 let creatorTools: CreatorTools | undefined;
 let localEnv: LocalEnvironment | undefined;
@@ -164,26 +165,33 @@ async function validate(
   project.readOnlySafety = true;
 
   let jsonFile: NodeFile | undefined;
-  let jsonFileExists = false;
+  let reportCacheKey: string | undefined;
 
   if (outputStorage && outputType !== OutputType.noReports) {
     jsonFile = outputStorage.rootFolder.ensureFile(
       StorageUtilities.ensureFileNameIsSafe(StorageUtilities.getBaseFromName(project.containerName)) + ".mcr.json"
     );
 
-    jsonFileExists = await jsonFile.exists();
+    // Computed before validating, so edits made while validation runs invalidate the report.
+    reportCacheKey = ValidationReportCache.getCacheKey(projectStart, {
+      suite,
+      exclusionList,
+      excludePaths: outputStoragePath ? [outputStoragePath] : undefined,
+    });
 
-    if (jsonFileExists && !force && !displayInfo) {
+    if (!force && !displayInfo && reportCacheKey && (await jsonFile.exists())) {
       if (!jsonFile.isContentLoaded) {
         await jsonFile.loadContent(false);
       }
 
-      let projectInfoData = StorageUtilities.getJsonObject(jsonFile) as IProjectInfoData | undefined;
+      const projectInfoData = StorageUtilities.getJsonObject(jsonFile) as IProjectInfoData | undefined;
 
-      if (projectInfoData === undefined) {
-        jsonFileExists = false;
-      } else {
-        let metaState = {
+      if (projectInfoData && ValidationReportCache.isReportCurrent(projectInfoData.reportCacheKey, reportCacheKey)) {
+        Log.verbose(
+          "'" + project.name + "' is unchanged since its last validation; reusing report. Use --force to re-validate."
+        );
+
+        const metaState = {
           projectContainerName: project.containerName,
           projectPath: project.projectFolder?.storageRelativePath,
           projectName: project.name,
@@ -198,27 +206,23 @@ async function validate(
     }
   }
 
-  if (!jsonFileExists || force || displayInfo || outputType === OutputType.noReports) {
-    return await validateAndDisposeProject(
-      project,
-      outputStorage,
-      jsonFile,
-      suite,
-      exclusionList,
-      outputMci,
-      outputType
-    );
-  } else {
-    Log.message("'" + project.name + "' has already been validated; skipping. Use --force to re-validate.");
-  }
-
-  return undefined;
+  return await validateAndDisposeProject(
+    project,
+    outputStorage,
+    jsonFile,
+    reportCacheKey,
+    suite,
+    exclusionList,
+    outputMci,
+    outputType
+  );
 }
 
 async function validateAndDisposeProject(
   project: Project,
   outputStorage: NodeStorage | undefined,
   mcrJsonFile: NodeFile | undefined,
+  reportCacheKey: string | undefined,
   suite?: string,
   exclusionList?: string,
   outputMci?: boolean,
@@ -300,7 +304,7 @@ async function validateAndDisposeProject(
   }
 
   try {
-    await outputResults(projectSet, pis, "", outputStorage, mcrJsonFile, outputMci, outputType);
+    await outputResults(projectSet, pis, "", outputStorage, mcrJsonFile, outputMci, outputType, reportCacheKey);
   } catch (e: any) {
     Log.error(e);
   }
@@ -334,7 +338,7 @@ async function validateAndDisposeProject(
 
       resultStates.push(projectSet);
 
-      await outputResults(projectSet, pis, "addon", outputStorage, undefined);
+      await outputResults(projectSet, pis, "addon", outputStorage, undefined, false, outputType);
     }
 
     // CLI context: enable aggressive cleanup for memory efficiency
@@ -353,7 +357,7 @@ async function validateAndDisposeProject(
 
     resultStates.push(projectSet);
 
-    await outputResults(projectSet, pis, "sharing", outputStorage, undefined);
+    await outputResults(projectSet, pis, "sharing", outputStorage, undefined, false, outputType);
 
     const shouldRunPlatformVersion = (pisData.info as any)["CWave"] !== undefined;
 
@@ -382,7 +386,7 @@ async function validateAndDisposeProject(
 
       resultStates.push(projectSet);
 
-      await outputResults(projectSet, pis, "currentplatform", outputStorage, undefined);
+      await outputResults(projectSet, pis, "currentplatform", outputStorage, undefined, false, outputType);
     }
   }
 
@@ -473,7 +477,8 @@ async function outputResults(
   outputStorage: NodeStorage | undefined,
   mcrJsonFile: NodeFile | undefined,
   outputMci?: boolean,
-  outputType?: OutputType
+  outputType?: OutputType,
+  reportCacheKey?: string
 ) {
   if (outputStorage) {
     if (outputType !== OutputType.noReports) {
@@ -569,7 +574,11 @@ async function outputResults(
         projectSet.infoSetData.index = undefined;
       }
 
-      const mcrContent = JSON.stringify(projectSet.infoSetData, null, 2);
+      const mcrContent = JSON.stringify(
+        reportCacheKey ? { ...projectSet.infoSetData, reportCacheKey } : projectSet.infoSetData,
+        null,
+        2
+      );
 
       mcrJsonFile.setContent(mcrContent);
 

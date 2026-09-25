@@ -21,6 +21,8 @@
  * - loadProjects(): Detects and loads projects from input path
  * - parseThreads(): Converts thread option to number
  * - parseOutputType(): Converts output type string to enum
+ * - resolveOutputType(): Combines --json and --ot into the effective output type
+ * - usesDefaultOutputFolder(): Whether the default ./out output folder applies
  * - resolveSuite(): Converts suite string to ProjectInfoSuite enum
  *
  * PROJECT DETECTION LOGIC:
@@ -95,6 +97,8 @@ export interface IRawOptions {
   // Input/Output
   inputFolder?: string;
   outputFolder?: string;
+  /** True if -o / --output-folder was given on the command line, rather than defaulted. */
+  outputFolderSpecified?: boolean;
   outputFile?: string;
   inputFile?: string;
   additionalFiles?: string;
@@ -316,8 +320,8 @@ export class CommandContextFactory {
     const yes = options.yes ?? json;
     const dryRun = options.dryRun ?? false;
 
-    // Parse output type - if --json flag is set, use json output type
-    const outputType = json ? OutputType.json : CommandContextFactory.parseOutputType(options.outputType);
+    // --json only changes how results are printed; it doesn't override an explicit --ot value.
+    const outputType = CommandContextFactory.resolveOutputType(json, options.outputType);
 
     // Create logger (quiet mode suppresses non-essential output, json mode routes non-data to stderr)
     const log = createLogger(verbose, quiet, debug, false, json);
@@ -339,7 +343,13 @@ export class CommandContextFactory {
 
     const inputFolder = path.isAbsolute(rawInputFolder) ? rawInputFolder : path.resolve(process.cwd(), rawInputFolder);
 
-    const rawOutputFolder = options.outputFolder || rawInputFolder;
+    const outputFolderSpecified =
+      options.outputFolderSpecified ?? (options.outputFolder !== undefined && options.outputFolder !== "out");
+
+    const rawOutputFolder =
+      (CommandContextFactory.usesDefaultOutputFolder(taskType, json, outputFolderSpecified)
+        ? options.outputFolder
+        : undefined) || rawInputFolder;
     const outputFolder = path.isAbsolute(rawOutputFolder)
       ? rawOutputFolder
       : path.resolve(process.cwd(), rawOutputFolder);
@@ -430,6 +440,7 @@ export class CommandContextFactory {
       inputFolderSpecified: options.inputFolder !== undefined,
       inputFolderAutoDiscovered,
       outputFolder,
+      outputFolderSpecified,
       outputFile: options.outputFile,
       inputStorage,
       outputStorage,
@@ -518,6 +529,29 @@ export class CommandContextFactory {
       return OutputType.noReports;
     }
     return OutputType.normal;
+  }
+
+  /**
+   * Combine --json and --ot into an OutputType. An explicit --ot noreports wins over --json.
+   */
+  static resolveOutputType(json: boolean, outputTypeStr?: string): OutputType {
+    const outputType = CommandContextFactory.parseOutputType(outputTypeStr);
+
+    if (json && outputType === OutputType.normal) {
+      return OutputType.json;
+    }
+
+    return outputType;
+  }
+
+  /**
+   * Whether the default output folder (./out in the current working directory) applies when
+   * -o isn't given. `validate --json` prints its results to stdout, so it only writes report files
+   * when -o is given explicitly. Otherwise its output folder falls back to the input folder, which
+   * validate never writes reports into.
+   */
+  static usesDefaultOutputFolder(taskType: TaskType, json: boolean, outputFolderSpecified: boolean): boolean {
+    return !(taskType === TaskType.validate && json && !outputFolderSpecified);
   }
 
   /**

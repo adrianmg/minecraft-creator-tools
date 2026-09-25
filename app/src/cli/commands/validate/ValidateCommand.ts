@@ -20,6 +20,11 @@
  * - Normal: Individual report files per project
  * - noReports: Suppress report generation
  * - aggregate: Combine reports across all projects
+ * - --json: Results are printed to stdout; report files are only written when -o is given
+ *
+ * REPORT REUSE:
+ * An existing <name>.mcr.json is reused instead of re-validating only when its cache key still
+ * matches (see ValidationReportCache). --force always re-validates.
  *
  * PARALLELIZATION:
  * When threads > 1, validation is distributed across worker threads.
@@ -113,6 +118,30 @@ export class ValidateCommand extends CommandBase {
 
   configure(cmd: Command): void {
     // Arguments are configured via metadata.arguments
+    cmd.addHelpText(
+      "after",
+      "\nReport files:\n" +
+        "  Writes <name>.csv, <name>.report.html, and <name>.mcr.json for each project to the output\n" +
+        "  folder (-o, default ./out). With --json, results are printed to stdout and report files are\n" +
+        "  only written when -o is given. Use --ot noreports to skip report files and write only\n" +
+        "  content index files (mci/, mch/).\n" +
+        "\n" +
+        "  An existing <name>.mcr.json is reused only if the project's path and files, the suite, the\n" +
+        "  exclusions, and the mct version are unchanged since it was written. Use --force to always\n" +
+        "  re-validate.\n" +
+        "\nExamples:\n" +
+        "  $ mct validate -i ./myproj                          # reports in ./out\n" +
+        "  $ mct validate -i ./myproj --json                   # JSON on stdout, no report files\n" +
+        "  $ mct validate -i ./myproj --json -o ./reports      # JSON on stdout, reports in ./reports\n"
+    );
+  }
+
+  /**
+   * Folder to write per-project and aggregated report files to, or undefined when no report files
+   * should be written. Reports are never written into the input folder.
+   */
+  static getReportOutputFolder(context: Pick<ICommandContext, "inputFolder" | "outputFolder">): string | undefined {
+    return context.outputFolder !== context.inputFolder ? context.outputFolder : undefined;
   }
 
   async execute(context: ICommandContext): Promise<void> {
@@ -259,7 +288,7 @@ export class ValidateCommand extends CommandBase {
           context.outputType === OutputType.noReports,
         outputType: context.outputType,
       },
-      outputFolder: context.outputFolder !== context.inputFolder ? context.outputFolder : undefined,
+      outputFolder: ValidateCommand.getReportOutputFolder(context),
       inputFolder: context.inputFolder,
       displayInfo: context.localEnv.displayInfo,
       displayVerbose: context.verbose,
@@ -464,8 +493,10 @@ export class ValidateCommand extends CommandBase {
     let mciFolder: NodeFolder | undefined;
     let indexFolder: NodeFolder | undefined;
 
-    if (context.outputFolder) {
-      outputStorage = new NodeStorage(context.outputFolder, "");
+    const reportOutputFolder = ValidateCommand.getReportOutputFolder(context);
+
+    if (reportOutputFolder) {
+      outputStorage = new NodeStorage(reportOutputFolder, "");
       indexFolder = outputStorage.rootFolder.ensureFolder("index");
       mciFolder = outputStorage.rootFolder.ensureFolder("mci");
     }

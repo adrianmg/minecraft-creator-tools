@@ -81,6 +81,7 @@ async function executeViaRegistry(options: any): Promise<void> {
   const rawOptions = {
     inputFolder: options.inputFolder,
     outputFolder: options.outputFolder,
+    outputFolderSpecified: options.outputFolder !== undefined && program.getOptionValueSource("outputFolder") === "cli",
     outputFile: options.outputFile,
     inputFile: options.inputFile,
     additionalFiles: options.additionalFiles,
@@ -247,7 +248,8 @@ program
   )
   .option(
     "-o, --output-folder <path to folder>",
-    "Path to the output project folder. If not specified, the current working directory + 'out' is used.",
+    "Path to the output project folder. If not specified, the current working directory + 'out' is used. " +
+      "'validate --json' only writes report files when this is specified.",
     "out"
   )
   .option(
@@ -260,7 +262,11 @@ program
   )
   .option("--afs, --additional-files [path to file]", "Comma-separated list of additional files to add to projects.")
   .option("--of, --output-file [path to file]", "Path to the export file, if applicable for the command you are using.")
-  .option("--ot, --output-type [output type]", "Type of output, if applicable for the command you are using.")
+  .option(
+    "--ot, --output-type [output type]",
+    "Type of output, if applicable for the command you are using. For validate, 'noreports' skips " +
+      ".csv, .report.html, and .mcr.json report files and writes only content index files, including with --json."
+  )
   .option("--updatepc, --update-passcode [update passcode]", "Sets update passcode.")
   .option("--adminpc, --admin-passcode [admin passcode]", "Sets admin passcode.")
   .option("--displaypc, --display-passcode [display passcode]", "Sets display passcode.")
@@ -282,7 +288,7 @@ program
   )
   .option("--betaapis, --beta-apis", "Ensures that the Beta APIs experiment is set for any worlds that are updated.")
   .option("--no-betaapis, --no-beta-apis", "Removes the Beta APIs experiment if set.")
-  .option("-f, --force", "Force any updates.")
+  .option("-f, --force", "Force any updates. For validate, re-validate instead of reusing an up-to-date report.")
   .option("--single", "When pointed at a folder via -i, force that folder to be processed as a single project.")
   .option("--editor", "Ensures that the world is an Editor world.")
   .option("--once", "When running as a server, only process one request and then shutdown.", false)

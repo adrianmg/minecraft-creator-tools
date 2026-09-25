@@ -322,6 +322,9 @@ export interface ICommandContext {
   /** Output folder path (resolved to absolute), may equal inputFolder */
   outputFolder: string;
 
+  /** True if the user explicitly specified -o / --output-folder on the command line */
+  outputFolderSpecified: boolean;
+
   /** Output file path specified via --of / --output-file */
   outputFile?: string;
 
