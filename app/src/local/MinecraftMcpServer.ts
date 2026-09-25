@@ -45,8 +45,9 @@ import ImageGenerationUtilities from "./ImageGenerationUtilities";
 import { ServerManagerFeatures } from "./ServerManager";
 import NodeStorage from "./NodeStorage";
 import ModelDesignDefinition from "../design/ModelDesignDefinition";
+import ModelDesignWiring, { IModelDesignWiringResult, ModelDesignUsage } from "../minecraft/ModelDesignWiring";
+import ProjectItem from "../app/ProjectItem";
 import StructureDesignDefinition from "../design/StructureDesignDefinition";
-import { ProjectItemType } from "../app/IProjectItemData";
 import IFolder from "../storage/IFolder";
 import { initializeToolCommands } from "../app/toolcommands";
 import { registerNodeOnlyCommands } from "../app/toolcommands/registerNodeCommands";
@@ -85,6 +86,27 @@ interface ISessionInfo {
   slot: number;
   /** Optional description provided when the session was connected/created */
   description?: string;
+}
+
+/**
+ * Result of writing a model design into a project (everything designModel does except the preview).
+ */
+export interface IDesignModelApplyResult {
+  modelId: string;
+  usage: ModelDesignUsage;
+  projectPath: string;
+  /** The design as persisted, with `identifier` set to the resolved geometry identifier. */
+  design: IMcpModelDesign;
+  geometryIdentifier: string;
+  /** Set when the caller's design.identifier was replaced so it follows modelId. */
+  identifierNote?: string;
+  geometryJson: string;
+  textureDataUrl?: string;
+  filesWritten: string[];
+  errors: string[];
+  warnings: string[];
+  wiring: IModelDesignWiringResult;
+  geoProjectItem?: ProjectItem;
 }
 
 export default class MinecraftMcpServer {
@@ -3019,62 +3041,61 @@ export default class MinecraftMcpServer {
   }
 
   /**
-   * Unified tool: Creates a 3D model, exports files to project, and returns a preview.
-   *
-   * This combines the functionality of previewModelDesign and exportModelDesign into
-   * a single, project-aware operation that:
-   * 1. Validates and converts the design to geometry + texture
-   * 2. Saves files to the appropriate project folder (auto-detected)
-   * 3. Persists the design to an accessory folder for future iteration
-   * 4. Auto-wires to matching entity/block/item if found
-   * 5. Returns a preview image
+   * Writes a model design into a project: geometry + texture files, wiring to the matching
+   * entity/block/item, and the persisted design in the design pack. Everything designModel
+   * does except rendering the preview.
    */
-  async _designModelOp(args: any): Promise<CallToolResult> {
+  async _applyModelDesignToProject(args: any): Promise<IDesignModelApplyResult | { errorResult: CallToolResult }> {
+    const errorResult = (text: string): { errorResult: CallToolResult } => ({
+      errorResult: { content: [{ type: "text", text }], isError: true },
+    });
+
     if (!this._creatorTools) {
-      return {
-        content: [{ type: "text", text: "Error: Creator Tools is not initialized" }],
-        isError: true,
-      };
+      return errorResult("Error: Creator Tools is not initialized");
     }
 
-    const design = args.design as IMcpModelDesign;
-    if (!design) {
-      return {
-        content: [{ type: "text", text: "Error: design is required" }],
-        isError: true,
-      };
+    const inputDesign = args.design as IMcpModelDesign;
+    if (!inputDesign) {
+      return errorResult("Error: design is required");
     }
 
-    const modelId = args.modelId as string;
+    const modelId = typeof args.modelId === "string" ? args.modelId.trim() : "";
     if (!modelId) {
-      return {
-        content: [{ type: "text", text: "Error: modelId is required" }],
-        isError: true,
-      };
+      return errorResult("Error: modelId is required");
+    }
+
+    if (!ModelDesignUtilities.isValidModelId(modelId)) {
+      return errorResult(
+        `Error: modelId "${modelId}" is not valid. Use letters, digits, '_', '-' or '.' only ` +
+          `(no namespace, spaces or path separators), e.g. "disco_pig". Use wireTo for a namespaced target.`
+      );
     }
 
     const projectPath = args.projectPath as string;
     if (!projectPath) {
-      return {
-        content: [{ type: "text", text: "Error: projectPath is required" }],
-        isError: true,
-      };
+      return errorResult("Error: projectPath is required");
     }
 
-    const usage = (args.usage as "entity" | "block" | "item") || "entity";
+    const usage: ModelDesignUsage = (args.usage as ModelDesignUsage) || "entity";
+
+    // The geometry identifier always follows modelId (the file name), so template placeholders
+    // like "custom_humanoid" can't produce a geometry that nothing references.
+    const geometryIdentifier = ModelDesignUtilities.getGeometryIdentifierForModelId(modelId, inputDesign.identifier);
+    let identifierNote: string | undefined;
+
+    if (inputDesign.identifier && inputDesign.identifier !== geometryIdentifier) {
+      const inputBare = inputDesign.identifier.replace(/^geometry\./, "");
+      if (inputBare !== geometryIdentifier.replace(/^geometry\./, "")) {
+        identifierNote = `design.identifier "${inputDesign.identifier}" was replaced with "${geometryIdentifier}" to match modelId.`;
+      }
+    }
+
+    const design: IMcpModelDesign = { ...inputDesign, identifier: geometryIdentifier };
 
     // Validate the design
     const validationErrors = ModelDesignUtilities.validateDesign(design);
     if (validationErrors.length > 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Design validation errors:\n${validationErrors.map((e) => `  - ${e}`).join("\n")}`,
-          },
-        ],
-        isError: true,
-      };
+      return errorResult(`Design validation errors:\n${validationErrors.map((e) => `  - ${e}`).join("\n")}`);
     }
 
     // Create/load project from the folder path
@@ -3085,29 +3106,39 @@ export default class MinecraftMcpServer {
     const project = new Project(this._creatorTools, path.basename(projectPath), null);
     project.setProjectFolder(projectFolder);
 
+    // Infer existing items for pack discovery and wiring
+    await project.inferProjectItemsFromFilesRootFolder();
+
     // Determine the resource-pack folder to write into.
     //
     // Previously this always called
     // `ensureDefaultResourcePackFolder()`, which created a nested
     // `resource_packs/<auto-named>/` *inside* the supplied projectPath. When
     // callers passed projectPath = `…/resource_packs/<my_rp>` (i.e. the RP
-    // itself), files landed at `…/resource_packs/<my_rp>/resource_packs/contoso_*/models/…`
+    // itself), files landed at `…/resource_packs/<my_rp>/resource_packs/<auto>/models/…`
     // instead of `…/resource_packs/<my_rp>/models/…`, leaving the entity
     // referencing a non-existent geometry and rendering as the default cube.
     //
     // We now detect when the supplied folder already IS a resource pack — by
     // the presence of a manifest.json with a `resources` module — and write
     // directly into it.
-    let rpFolder;
+    let rpFolder: IFolder | null;
     if (MinecraftMcpServer._isResourcePackFolder(projectPath)) {
       rpFolder = projectFolder;
       Log.debug(`designModel: projectPath is already a resource pack — writing directly into it.`);
     } else {
-      rpFolder = await project.ensureDefaultResourcePackFolder();
+      rpFolder = await project.getDefaultResourcePackFolder();
     }
 
-    // Infer existing items for auto-wiring discovery
-    await project.inferProjectItemsFromFilesRootFolder();
+    // Name any newly created packs (the design pack that stores the design, or a resource pack for
+    // an empty project) after the project's existing packs or folder instead of the "contoso_…"
+    // placeholder creator name.
+    const namingFolder = rpFolder ?? (await project.getDefaultBehaviorPackFolder());
+    project.shortName = MinecraftMcpServer._getDesignProjectShortName(projectPath, namingFolder?.name);
+
+    if (!rpFolder) {
+      rpFolder = await project.ensureDefaultResourcePackFolder();
+    }
 
     // Determine folder paths based on usage
     const modelsSubPath =
@@ -3142,14 +3173,12 @@ export default class MinecraftMcpServer {
     }
 
     // Write texture file
-    let textureBytes: Uint8Array | undefined;
     if (textureDataUrl) {
       const texFile = texturesFolder.ensureFile(`${modelId}.png`);
       try {
         const base64Match = textureDataUrl.match(/^data:image\/png;base64,(.*)$/);
         if (base64Match) {
-          textureBytes = Buffer.from(base64Match[1], "base64");
-          texFile.setContent(textureBytes);
+          texFile.setContent(Buffer.from(base64Match[1], "base64"));
           await texFile.saveContent(false);
           filesWritten.push(texFile.storageRelativePath || `${modelId}.png`);
         }
@@ -3160,42 +3189,21 @@ export default class MinecraftMcpServer {
       errors.push("Could not generate texture image");
     }
 
-    // Determine wiring target
-    let wireTarget: string | undefined = undefined;
-    if (args.wireTo === false) {
-      // Explicit opt-out
-      wireTarget = undefined;
-    } else if (typeof args.wireTo === "string") {
-      // Explicit target
-      wireTarget = args.wireTo;
-    } else {
-      // Auto-discover matching item by modelId
-      const matchingItem = project.items.find((item) => {
-        if (usage === "entity" && item.itemType === ProjectItemType.entityTypeBehavior) {
-          return item.name === modelId;
-        }
-        if (usage === "block" && item.itemType === ProjectItemType.blockTypeBehavior) {
-          return item.name === modelId;
-        }
-        if (usage === "item" && item.itemType === ProjectItemType.itemTypeBehavior) {
-          return item.name === modelId;
-        }
-        return false;
-      });
-
-      if (matchingItem) {
-        wireTarget = matchingItem.name;
-        Log.debug(`designModel: Auto-discovered matching ${usage}: ${wireTarget}`);
-      }
+    if (filesWritten.length === 0) {
+      return errorResult(`Model creation failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`);
     }
 
-    // TODO: Implement actual wiring to entity/block/item definitions
-    // This would update entity_resources.json, terrain_texture.json, etc.
-    // For now, we just note if wiring would happen
-    let wiringNote = "";
-    if (wireTarget) {
-      wiringNote = `\n\n💡 Found matching ${usage} "${wireTarget}" - wiring support coming soon.`;
-    }
+    // Wire the model to the matching entity/block/item (or the explicit wireTo target)
+    const wiring = await ModelDesignWiring.wire({
+      project,
+      rpFolder,
+      modelId,
+      usage,
+      geometryIdentifier,
+      wireTo: args.wireTo === false ? false : typeof args.wireTo === "string" ? args.wireTo : undefined,
+    });
+
+    Log.debug(`designModel: wiring ${wiring.status} - ${wiring.message}`);
 
     // Re-infer to get the new project item for the geometry file
     await project.inferProjectItemsFromFilesRootFolder();
@@ -3211,7 +3219,7 @@ export default class MinecraftMcpServer {
         if (designDef) {
           await designDef.updateDesign(design, {
             usage,
-            wiredTo: wireTarget,
+            wiredTo: wiring.status === "wired" ? wiring.targetId : undefined,
           });
           Log.debug(`designModel: Saved design to accessory folder for ${modelId}`);
         }
@@ -3219,6 +3227,44 @@ export default class MinecraftMcpServer {
         Log.debug(`designModel: Failed to save design to accessory folder: ${e}`);
       }
     }
+
+    return {
+      modelId,
+      usage,
+      projectPath,
+      design,
+      geometryIdentifier,
+      identifierNote,
+      geometryJson,
+      textureDataUrl,
+      filesWritten,
+      errors,
+      warnings: conversionResult.warnings,
+      wiring,
+      geoProjectItem,
+    };
+  }
+
+  /**
+   * Unified tool: Creates a 3D model, exports files to project, and returns a preview.
+   *
+   * This combines the functionality of previewModelDesign and exportModelDesign into
+   * a single, project-aware operation that:
+   * 1. Validates and converts the design to geometry + texture
+   * 2. Saves files to the appropriate project folder (auto-detected)
+   * 3. Wires the model to a matching entity/block/item (see ModelDesignWiring)
+   * 4. Persists the design to an accessory folder for future iteration
+   * 5. Returns a preview image
+   */
+  async _designModelOp(args: any): Promise<CallToolResult> {
+    const applied = await this._applyModelDesignToProject(args);
+
+    if ("errorResult" in applied) {
+      return applied.errorResult;
+    }
+
+    const { modelId, usage, projectPath, geometryJson, textureDataUrl, geoProjectItem, filesWritten, errors, wiring } =
+      applied;
 
     // Generate preview image
     let previewImageData: Uint8Array | undefined;
@@ -3331,25 +3377,22 @@ export default class MinecraftMcpServer {
     }
 
     // Build response
-    if (errors.length > 0 && filesWritten.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Model creation failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-
-    let resultText = `✅ Created model "${modelId}" (${usage}):\n`;
+    let resultText = `✅ Created model "${modelId}" (${usage}), geometry identifier "${applied.geometryIdentifier}":\n`;
     for (const file of filesWritten) {
       resultText += `  ✓ ${file}\n`;
     }
 
-    if (conversionResult.warnings.length > 0) {
-      resultText += `\nWarnings:\n${conversionResult.warnings.map((w) => `  - ${w}`).join("\n")}`;
+    if (applied.identifierNote) {
+      resultText += `\nNote: ${applied.identifierNote}\n`;
+    }
+
+    resultText += `\n${wiring.status === "wired" ? "🔗" : wiring.status === "skipped" ? "⏭️" : "⚠️"} ${wiring.message}\n`;
+    for (const file of wiring.filesUpdated) {
+      resultText += `  ✓ updated ${file}\n`;
+    }
+
+    if (applied.warnings.length > 0) {
+      resultText += `\nWarnings:\n${applied.warnings.map((w) => `  - ${w}`).join("\n")}`;
     }
 
     if (errors.length > 0) {
@@ -3359,8 +3402,6 @@ export default class MinecraftMcpServer {
     if (previewError) {
       resultText += `\nPreview: ${previewError}`;
     }
-
-    resultText += wiringNote;
 
     const responseContent: any[] = [];
     let previewImagePath: string | undefined;
@@ -3411,9 +3452,11 @@ export default class MinecraftMcpServer {
         filesWritten,
         modelId,
         usage,
-        wiredTo: wireTarget,
-        geometryJson: conversionResult.geometry,
-        warnings: conversionResult.warnings,
+        geometryIdentifier: applied.geometryIdentifier,
+        wiredTo: wiring.status === "wired" ? wiring.targetId : undefined,
+        wiring,
+        geometryJson: JSON.parse(geometryJson),
+        warnings: applied.warnings,
         errors,
         // Include preview status for debugging
         previewStatus: previewImagePath ? "generated" : previewError || "no-preview",
@@ -3421,6 +3464,29 @@ export default class MinecraftMcpServer {
         previewImagePath,
       },
     };
+  }
+
+  /**
+   * Short name used for packs designModel creates (e.g. `<name>_dp`), derived from the project's
+   * existing resource/behavior pack folder name (minus a `_rp`/`_bp`-style suffix) or, failing
+   * that, the project folder name. Kept to 13 characters so the `_dp`/`_rp` suffix survives
+   * MinecraftUtilities.makeNameFolderSafe's 16-character limit.
+   */
+  private static _getDesignProjectShortName(projectPath: string, packFolderName?: string): string {
+    let candidate = "";
+
+    if (packFolderName) {
+      candidate = MinecraftMcpServer._toSafeFolderName(packFolderName).replace(
+        /_(rp|bp|resource_?packs?|behavior_?packs?|resources?|behaviors?)$/,
+        ""
+      );
+    }
+
+    if (!candidate || candidate === "addon") {
+      candidate = MinecraftMcpServer._toSafeFolderName(path.basename(path.resolve(projectPath)));
+    }
+
+    return candidate.slice(0, 13).replace(/_+$/, "") || "project";
   }
 
   /**
@@ -3747,7 +3813,7 @@ export default class MinecraftMcpServer {
           text:
             `Template: ${args.templateType}\n\n` +
             `${template.description}\n\n` +
-            `This template can be passed directly to designModel.\n` +
+            `This template can be passed directly to designModel (the geometry identifier is set from modelId).\n` +
             `Customize the colors in the 'textures' dictionary and adjust cube dimensions as needed.\n\n` +
             `Template JSON:\n` +
             "```json\n" +
@@ -4915,7 +4981,12 @@ export default class MinecraftMcpServer {
 
     const mcpModelDesignSchema = z.object({
       formatVersion: z.string().optional(),
-      identifier: z.string().describe("Model identifier, e.g., 'custom_block' or 'geometry.custom_block'"),
+      identifier: z
+        .string()
+        .describe(
+          "Model identifier, e.g., 'custom_block' or 'geometry.custom_block'. designModel keeps it only if it " +
+            "ends with modelId; otherwise it uses 'geometry.<modelId>'"
+        ),
       description: z.string().optional(),
       textureSize: vector2Schema.optional().describe("Texture atlas size [width, height], default [64, 64]"),
       pixelsPerUnit: z
@@ -4948,24 +5019,40 @@ export default class MinecraftMcpServer {
           "Designs a 3D model (geometry + texture) and saves it to a Minecraft project folder. " +
           "Use this tool for iterative model design - it handles everything in one step:\n\n" +
           "1. ✅ Validates the model design\n" +
-          "2. ✅ Creates geometry (.geo.json) and texture (.png) files\n" +
+          "2. ✅ Creates geometry (.geo.json) and texture (.png) files named after modelId\n" +
           "3. ✅ Saves files to the correct project location (auto-detects pack structure)\n" +
-          "4. ✅ Persists the design for future iteration (update existing models)\n" +
-          "5. ✅ Auto-wires to matching entity/block/item if found\n" +
+          "4. ✅ Wires the model to the matching entity or block (items: existing attachables only, see below)\n" +
+          "5. ✅ Persists the design for future iteration (update existing models)\n" +
           "6. ✅ Returns a preview image\n\n" +
+          "**Naming:** Files are `<modelId>.geo.json` and `<modelId>.png`. The geometry identifier follows modelId: " +
+          "`design.identifier` is kept only if it already ends with modelId (e.g. 'geometry.demo.panda' for modelId " +
+          "'panda'); otherwise (e.g. template placeholders like 'custom_humanoid') it is replaced with " +
+          "'geometry.<modelId>'. The response reports the identifier used. The design is stored in the project's " +
+          "design pack (`design_packs/<project>_dp/`).\n\n" +
           "**Usage parameter:**\n" +
           "- 'entity': Saves to /models/entity/ and /textures/entity/ (default)\n" +
           "- 'block': Saves to /models/blocks/ and /textures/blocks/\n" +
           "- 'item': Saves to /models/item/ and /textures/items/\n\n" +
           "**Wiring behavior:**\n" +
-          "- By default, auto-discovers matching entity/block/item by modelId and wires the model\n" +
-          "- Set wireTo to a specific ID to wire to a different target\n" +
-          "- Set wireTo to false to skip wiring entirely\n\n" +
+          "- Target: wireTo if given, otherwise modelId. A value with ':' must match the full identifier " +
+          "(e.g. 'demo:panda'); otherwise it matches the name after the namespace. If several identifiers match, " +
+          "nothing is wired; pass the full identifier.\n" +
+          "- entity: sets the client entity's geometry.default and textures.default.\n" +
+          "- block: sets minecraft:geometry and minecraft:material_instances ('*') on the block and registers " +
+          "the texture in terrain_texture.json.\n" +
+          "- item: updates geometry.default/textures.default of an existing attachable for the item. Attachables " +
+          "are NOT created, so without one the item is not wired and still renders as its icon.\n" +
+          "- Set wireTo to false to skip wiring entirely. The response always says what was (or wasn't) wired.\n\n" +
           "**Iteration:** Running this tool again with the same modelId updates the existing files in place.",
         inputSchema: {
           projectPath: z.string().describe("Absolute path to the Minecraft project folder (can be empty folder)"),
           design: mcpModelDesignSchema.describe("The model design specification"),
-          modelId: z.string().describe("Unique identifier for the model (e.g., 'disco_pig', 'magic_sword')"),
+          modelId: z
+            .string()
+            .describe(
+              "Unique identifier for the model, used for file names and the geometry identifier " +
+                "(e.g., 'disco_pig', 'magic_sword'). Letters, digits, '_', '-' and '.' only; no namespace."
+            ),
           usage: z
             .enum(["entity", "block", "item"])
             .optional()
@@ -4974,8 +5061,8 @@ export default class MinecraftMcpServer {
             .union([z.string(), z.literal(false)])
             .optional()
             .describe(
-              "Wire the model to a specific entity/block/item ID, or false to skip wiring. " +
-                "Default: auto-discover matching item by modelId"
+              "Identifier of the entity/block/item to wire the model to (e.g. 'demo:panda' or 'panda'), " +
+                "or false to skip wiring. Default: auto-discover the target by modelId"
             ),
         },
       },

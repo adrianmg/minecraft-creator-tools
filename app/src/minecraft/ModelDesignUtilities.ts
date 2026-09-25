@@ -546,6 +546,35 @@ export default class ModelDesignUtilities {
   }
 
   /**
+   * Returns true when a model ID is safe to use as a file name and geometry identifier segment
+   * (letters, digits, underscores, hyphens and dots; must not start with a dot or hyphen).
+   */
+  static isValidModelId(modelId: string | undefined): boolean {
+    return typeof modelId === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(modelId);
+  }
+
+  /**
+   * Resolves the geometry identifier for a design saved under `modelId`, so the geometry
+   * identifier always follows the file name (`<modelId>.geo.json`).
+   *
+   * - If `designIdentifier` already ends with the modelId (e.g. `geometry.demo.panda` or
+   *   `panda` for modelId `panda`), it is kept, normalized with a `geometry.` prefix.
+   * - Otherwise (e.g. a template placeholder like `custom_humanoid`), `geometry.<modelId>` is used.
+   */
+  static getGeometryIdentifierForModelId(modelId: string, designIdentifier?: string): string {
+    if (designIdentifier) {
+      const trimmed = designIdentifier.trim();
+      const bare = trimmed.startsWith("geometry.") ? trimmed.substring("geometry.".length) : trimmed;
+
+      if (bare === modelId || bare.endsWith("." + modelId)) {
+        return "geometry." + bare;
+      }
+    }
+
+    return "geometry." + modelId;
+  }
+
+  /**
    * Convert an MCP model design to Minecraft geometry JSON format
    */
   static convertToGeometry(design: IMcpModelDesign): IModelDesignConversionResult {

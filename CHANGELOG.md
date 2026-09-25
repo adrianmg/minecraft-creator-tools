@@ -8,6 +8,17 @@ For the full commit history, see [Releases](https://github.com/Mojang/minecraft-
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP `designModel`**: the geometry identifier now follows `modelId` (template
+  placeholders such as `custom_humanoid` are replaced with `geometry.<modelId>`),
+  and the model is actually wired: the matching client entity's
+  `geometry.default`/`textures.default` are updated, blocks get
+  `minecraft:geometry`/`minecraft:material_instances` plus a
+  `terrain_texture.json` entry, and existing item attachables are updated
+  (attachables are not created; the response says so). Designs are stored in a
+  design pack named after the project instead of `contoso_<name>_dp`.
+
 ### Changed
 
 - **Inspector view**: PASSED rule rows are now hidden by default. Errors,
