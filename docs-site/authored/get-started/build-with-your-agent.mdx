@@ -7,19 +7,14 @@ Minecraft Creator Tools includes a [Model Context Protocol](https://modelcontext
 
 <Steps>
   <Step title="Install Minecraft Creator Tools">
-    Minecraft Creator Tools requires Node.js 22 or later.
+    Minecraft Creator Tools requires Node.js 22 or later. Install it, then review and accept the Minecraft End User License Agreement and Privacy Statement:
 
     ```bash
     npm install -g @minecraft/creator-tools
-    ```
-
-  </Step>
-  <Step title="Accept the Minecraft EULA">
-    The MCP server doesn't start until you review and accept the Minecraft End User License Agreement.
-
-    ```bash
     mct eula
     ```
+
+    Creating projects from templates and running test worlds require the EULA. If you skip `mct eula`, your agent asks you to run it when a tool needs it.
 
   </Step>
   <Step title="Connect your agent">
