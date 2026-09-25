@@ -92,14 +92,44 @@ export function buildNavigation(toc, config, routeForHref) {
     return groups;
   };
 
+  const dropdownsFor = (spec, variant) => {
+    if (!spec.perChild) {
+      const groups = spec.groups.flatMap((groupSpec) => groupsFor(groupSpec, variant));
+      return groups.length ? [{ dropdown: spec.dropdown, icon: spec.icon, groups }] : [];
+    }
+
+    // One dropdown per child of the TOC node. `partitions` moves matching entries of a child into extra dropdowns.
+    return findTocNode(toc, spec.toc).items.flatMap((child) => {
+      const label = (spec.labelPrefix ?? "") + child.name;
+      const partitions = (spec.partitions?.[child.name] ?? []).map((partition) => ({
+        ...partition,
+        pattern: new RegExp(partition.match),
+        items: [],
+      }));
+      const rest = [];
+      for (const item of child.items) {
+        (partitions.find((partition) => partition.pattern.test(item.name))?.items ?? rest).push(item);
+      }
+      const dropdown = (name, items, icon) => {
+        const pages = items.map((item) => toEntry(item, variant)).filter(Boolean);
+        return pages.length ? { dropdown: name, icon, groups: [{ group: name, pages }] } : null;
+      };
+      return [
+        dropdown(label, rest, spec.icon),
+        ...partitions.map((partition) => dropdown(`${label} ${partition.suffix}`, partition.items, partition.icon)),
+      ].filter(Boolean);
+    });
+  };
+
   const tabs = config.tabs.map(({ groups, versions, ...tab }) => {
     if (versions) {
       return {
         ...tab,
-        versions: versions.map(({ groups: versionGroups, variant = "stable", ...version }) => ({
-          ...version,
-          groups: versionGroups.flatMap((spec) => groupsFor(spec, variant)),
-        })),
+        versions: versions.map(({ groups: versionGroups, dropdowns, variant = "stable", ...version }) =>
+          dropdowns
+            ? { ...version, dropdowns: dropdowns.flatMap((spec) => dropdownsFor(spec, variant)) }
+            : { ...version, groups: versionGroups.flatMap((spec) => groupsFor(spec, variant)) }
+        ),
       };
     }
     return { ...tab, groups: groups.flatMap((spec) => groupsFor(spec, "stable")) };

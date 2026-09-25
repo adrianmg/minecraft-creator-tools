@@ -9,23 +9,46 @@
           "group": "Get started",
           "pages": ["get-started/build-with-your-agent", "get-started/agent-tools", "get-started/mct-cli"]
         },
-        { "toc": ["Learning Journey"] },
-        { "toc": ["Concepts"] },
-        { "toc": ["Contribute"] }
+        {
+          "toc": ["Learning Journey"]
+        },
+        {
+          "toc": ["Concepts"]
+        },
+        {
+          "toc": ["Contribute"]
+        }
       ]
     },
     {
       "tab": "Guides",
       "icon": "book-open",
       "groups": [
-        { "toc": ["Blocks"] },
-        { "toc": ["Items and Recipes"] },
-        { "toc": ["Entities and Particles"] },
-        { "toc": ["Worlds and Cameras"] },
-        { "toc": ["Rendering and Vibrant Visuals"] },
-        { "toc": ["Assets and Sound"] },
-        { "toc": ["Game Logic"], "exclude": ["Scripting"] },
-        { "toc": ["Best Practices & Tips"] }
+        {
+          "toc": ["Blocks"]
+        },
+        {
+          "toc": ["Items and Recipes"]
+        },
+        {
+          "toc": ["Entities and Particles"]
+        },
+        {
+          "toc": ["Worlds and Cameras"]
+        },
+        {
+          "toc": ["Rendering and Vibrant Visuals"]
+        },
+        {
+          "toc": ["Assets and Sound"]
+        },
+        {
+          "toc": ["Game Logic"],
+          "exclude": ["Scripting"]
+        },
+        {
+          "toc": ["Best Practices & Tips"]
+        }
       ]
     },
     {
@@ -46,24 +69,88 @@
       "versions": [
         {
           "version": "Stable",
-          "groups": [
-            { "toc": ["Game Logic", "Scripting"], "group": "Scripting guides" },
-            { "toc": ["Reference Documentation", "Script APIs"], "flatten": true, "group": "Script APIs" }
+          "dropdowns": [
+            {
+              "dropdown": "Scripting guides",
+              "icon": "book-open",
+              "groups": [
+                {
+                  "toc": ["Game Logic", "Scripting"],
+                  "group": "Scripting guides"
+                }
+              ]
+            },
+            {
+              "toc": ["Reference Documentation", "Script APIs"],
+              "perChild": true,
+              "labelPrefix": "@",
+              "icon": "code",
+              "partitions": {
+                "minecraft/server": [
+                  {
+                    "suffix": "· Events",
+                    "match": "(After|Before)Events?(Signal)?$",
+                    "icon": "bolt"
+                  },
+                  {
+                    "suffix": "· Components",
+                    "match": "Component",
+                    "icon": "puzzle-piece"
+                  }
+                ]
+              }
+            }
           ]
         },
         {
           "version": "Beta",
           "tag": "Experimental",
           "variant": "beta",
-          "groups": [{ "toc": ["Reference Documentation", "Script APIs"], "flatten": true, "group": "Script APIs" }]
+          "dropdowns": [
+            {
+              "toc": ["Reference Documentation", "Script APIs"],
+              "perChild": true,
+              "labelPrefix": "@",
+              "icon": "code",
+              "partitions": {
+                "minecraft/server": [
+                  {
+                    "suffix": "· Events",
+                    "match": "(After|Before)Events?(Signal)?$",
+                    "icon": "bolt"
+                  },
+                  {
+                    "suffix": "· Components",
+                    "match": "Component",
+                    "icon": "puzzle-piece"
+                  }
+                ]
+              }
+            }
+          ]
         },
         {
           "version": "1.x",
-          "groups": [
+          "dropdowns": [
             {
               "toc": ["Reference Documentation", "Prior Versions of Script APIs"],
-              "flatten": true,
-              "group": "Prior versions"
+              "perChild": true,
+              "labelPrefix": "@",
+              "icon": "code",
+              "partitions": {
+                "minecraft/server 1.x.x": [
+                  {
+                    "suffix": "· Events",
+                    "match": "(After|Before)Events?(Signal)?$",
+                    "icon": "bolt"
+                  },
+                  {
+                    "suffix": "· Components",
+                    "match": "Component",
+                    "icon": "puzzle-piece"
+                  }
+                ]
+              }
             }
           ]
         }
@@ -72,12 +159,24 @@
     {
       "tab": "Tools",
       "icon": "wrench",
-      "groups": [{ "toc": ["Tools and Libraries"], "flatten": true, "group": "Tools" }]
+      "groups": [
+        {
+          "toc": ["Tools and Libraries"],
+          "flatten": true,
+          "group": "Tools"
+        }
+      ]
     },
     {
       "tab": "What's new",
       "icon": "sparkles",
-      "groups": [{ "toc": ["Updates and News"], "flatten": true, "group": "Update summaries" }]
+      "groups": [
+        {
+          "toc": ["Updates and News"],
+          "flatten": true,
+          "group": "Update summaries"
+        }
+      ]
     }
   ]
 }

@@ -42,12 +42,8 @@
   "footer": {
     "links": [
       {
-        "header": "Source",
+        "header": "License",
         "items": [
-          {
-            "label": "Adapted from MicrosoftDocs/minecraft-creator",
-            "href": "https://github.com/MicrosoftDocs/minecraft-creator"
-          },
           {
             "label": "Content license: CC BY 4.0",
             "href": "https://creativecommons.org/licenses/by/4.0/"
@@ -55,5 +51,8 @@
         ]
       }
     ]
+  },
+  "seo": {
+    "indexing": "all"
   }
 }

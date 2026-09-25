@@ -154,4 +154,58 @@ describe("buildNavigation", () => {
     ]);
     assert.equal(placed.get("a"), "Intro");
   });
+
+  it("builds one dropdown per child and splits partitions into their own dropdowns", () => {
+    const apiToc = [
+      {
+        name: "APIs",
+        href: null,
+        items: [
+          {
+            name: "minecraft/server",
+            href: null,
+            items: [
+              { name: "Entity", href: "entity.md", items: [] },
+              { name: "WorldAfterEvents", href: "events.md", items: [] },
+              { name: "EntityHealthComponent", href: "health.md", items: [] },
+            ],
+          },
+          { name: "minecraft/server-ui", href: null, items: [{ name: "Form", href: "form.md", items: [] }] },
+        ],
+      },
+    ];
+    const config = {
+      tabs: [
+        {
+          tab: "API",
+          versions: [
+            {
+              version: "Stable",
+              dropdowns: [
+                {
+                  toc: ["APIs"],
+                  perChild: true,
+                  labelPrefix: "@",
+                  partitions: {
+                    "minecraft/server": [
+                      { suffix: "· Events", match: "(After|Before)Events?$" },
+                      { suffix: "· Components", match: "Component" },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const { navigation } = buildNavigation(apiToc, config, routeForHref);
+    const names = navigation.tabs[0].versions[0].dropdowns.map(({ dropdown, groups }) => [dropdown, groups[0].pages]);
+    assert.deepEqual(names, [
+      ["@minecraft/server", ["entity"]],
+      ["@minecraft/server · Events", ["events"]],
+      ["@minecraft/server · Components", ["health"]],
+      ["@minecraft/server-ui", ["form"]],
+    ]);
+  });
 });
