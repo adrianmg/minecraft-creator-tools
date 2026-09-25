@@ -2,10 +2,55 @@
 // Tags outside the allowlist (for example `<players>` in command syntax) become literal text.
 
 const ALLOWED_TAGS = new Set([
-  "a", "b", "blockquote", "br", "caption", "center", "code", "col", "colgroup", "dd", "del", "details", "div", "dl",
-  "dt", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "iframe", "img", "ins", "kbd", "li", "ol", "p", "pre",
-  "s", "small", "span", "strong", "sub", "summary", "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "u",
-  "ul", "video",
+  "a",
+  "b",
+  "blockquote",
+  "br",
+  "caption",
+  "center",
+  "code",
+  "col",
+  "colgroup",
+  "dd",
+  "del",
+  "details",
+  "div",
+  "dl",
+  "dt",
+  "em",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "hr",
+  "i",
+  "iframe",
+  "img",
+  "ins",
+  "kbd",
+  "li",
+  "ol",
+  "p",
+  "pre",
+  "s",
+  "small",
+  "span",
+  "strong",
+  "sub",
+  "summary",
+  "sup",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+  "u",
+  "ul",
+  "video",
 ]);
 
 const VOID_TAGS = new Set(["br", "col", "hr", "img"]);
@@ -58,7 +103,7 @@ function jsxAttributes(text, rewriteUrl) {
       attributes.push(`style={${JSON.stringify(styleObject(value))}}`);
     } else {
       if ((lower === "href" || lower === "src") && rewriteUrl) {
-        value = rewriteUrl(value, lower === "src" ? "image" : "link");
+        value = rewriteUrl(value, lower === "src" ? "image" : "link") ?? value;
       }
       attributes.push(value.includes('"') ? `${name}={${JSON.stringify(value)}}` : `${name}="${value}"`);
     }

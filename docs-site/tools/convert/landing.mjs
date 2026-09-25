@@ -36,16 +36,17 @@ export function landingToMdx(yamlText, rewriteUrl) {
       type: "list",
       ordered: false,
       spread: false,
-      children: links.map((link) => ({
-        type: "listItem",
-        spread: false,
-        children: [
-          {
-            type: "paragraph",
-            children: [{ type: "link", url: rewriteUrl(String(link.url ?? "")), children: [text(link.text)] }],
-          },
-        ],
-      })),
+      children: links.map((link) => {
+        const url = rewriteUrl(String(link.url ?? ""));
+        const label = text(link.text);
+        return {
+          type: "listItem",
+          spread: false,
+          children: [
+            { type: "paragraph", children: [url === null ? label : { type: "link", url, children: [label] }] },
+          ],
+        };
+      }),
     };
     const icon = ICONS[linkLists[0]?.linkListType] ?? "book-open";
     return jsx("Card", { title: String(section.title ?? ""), icon }, links.length ? [list] : []);

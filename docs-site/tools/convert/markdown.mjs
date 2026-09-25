@@ -161,9 +161,19 @@ function transformHtml(tree, rewriteUrl) {
 }
 
 function transformUrls(tree, rewriteUrl) {
-  visit(tree, (node) => {
-    if (node.type === "link" || node.type === "definition") node.url = rewriteUrl(node.url, "link");
-    else if (node.type === "image") node.url = rewriteUrl(node.url, "image");
+  visit(tree, (node, index, parent) => {
+    if (node.type === "link") {
+      const url = rewriteUrl(node.url, "link");
+      if (url === null) {
+        parent.children.splice(index, 1, ...node.children);
+        return [SKIP, index];
+      }
+      node.url = url;
+    } else if (node.type === "definition") {
+      node.url = rewriteUrl(node.url, "link") ?? node.url;
+    } else if (node.type === "image") {
+      node.url = rewriteUrl(node.url, "image") ?? node.url;
+    }
   });
 }
 

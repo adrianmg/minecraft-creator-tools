@@ -22,7 +22,7 @@ To preview on another port, run `cd site && npx mint dev --port 3333`. `npm run 
 | `npm test` | Converter unit tests. |
 | `npm run check` | Compiles every generated page with the MDX compiler. |
 | `npm run validate` | Runs `mint validate` on the generated site. |
-| `npm run broken-links` | Runs `mint broken-links`. About 60 links are broken upstream; `build-report.json` lists them. |
+| `npm run broken-links` | Runs `mint broken-links`. Upstream link mistakes are fixed during the build; see `config/link-fixes.json`. |
 
 ## What's in git
 
@@ -31,6 +31,7 @@ To preview on another port, run `cd site && npx mint dev --port 3333`. `npm run 
 | `source.json` | Upstream repository and pinned commit. Update with `npm run sync -- --commit <sha>`. |
 | `config/docs.base.json` | Mintlify theme, navbar, footer, and global anchors. |
 | `config/navigation.json` | Tabs and groups, mapped to entries in the upstream `TOC.yml`. |
+| `config/link-fixes.json` | Replacements for upstream links that no generic rule can resolve. |
 | `authored/` | Pages written for this site, such as the home page and Get started. Copied over generated pages. |
 | `tools/` | Sync, build, and check scripts. |
 | `test/` | Converter tests. |

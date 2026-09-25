@@ -4,8 +4,11 @@
 
 import { posix } from "node:path";
 
+// Also matches `/creator/...`, a common upstream typo for `/minecraft/creator/...` (Learn has no /creator docset).
 const LEARN_URL =
-  /^(?:https?:\/\/learn\.microsoft\.com)?\/(?:[a-z]{2}-[a-z]{2}\/)?minecraft\/creator\/?([^?#]*)(\?[^#]*)?(#.*)?$/i;
+  /^(?:https?:\/\/learn\.microsoft\.com)?\/(?:[a-z]{2}-[a-z]{2}\/)?(?:minecraft\/)?creator(?=\/|[?#]|$)\/?([^?#]*)(\?[^#]*)?(#.*)?$/i;
+const SCRIPT_API_PAGE = /^scriptapi\/minecraft\/([^/]+)\/(.+)$/;
+const MAX_REDIRECT_HOPS = 5;
 const PAGE_EXTENSION = /\.(md|yml)$/i;
 
 export const BETA_PREFIX = "beta/";
@@ -32,11 +35,12 @@ function safeDecode(value) {
 }
 
 /**
- * @param {{ files: string[], pages: string[], experimentalOnly?: Set<string>, redirections?: { source_path: string, redirect_url: string }[], mediaPath?: (file: string, kind: "link" | "image") => string }} options
+ * @param {{ files: string[], pages: string[], experimentalOnly?: Set<string>, redirections?: { source_path: string, redirect_url: string }[], mediaPath?: (file: string, kind: "link" | "image") => string, linkFixes?: Record<string, { to: string | null }> }} options
  *   files: every file under creator/ (posix, relative); pages: files published as pages;
  *   experimentalOnly: Script API pages that exist only in the experimental moniker;
  *   redirections: entries from creator/.openpublishing.redirection.json;
- *   mediaPath: output path for a referenced file (defaults to the lowercased source path).
+ *   mediaPath: output path for a referenced file (defaults to the lowercased source path);
+ *   linkFixes: broken source paths mapped to `{ to: "Path.md#hash" | null }`; null removes the link and keeps its text.
  */
 export function createSite({
   files,
@@ -44,15 +48,18 @@ export function createSite({
   experimentalOnly = new Set(),
   redirections = [],
   mediaPath = (file) => file.toLowerCase(),
+  linkFixes = {},
 }) {
   const fileByLowerPath = new Map(files.map((file) => [file.toLowerCase(), file]));
   const pageByKey = new Map(pages.map((page) => [routeKey(page), page]));
   const redirectByKey = new Map(redirections.map((entry) => [routeKey(entry.source_path), entry.redirect_url]));
+  const fixByKey = new Map(Object.entries(linkFixes).map(([path, fix]) => [routeKey(path), fix]));
   /** @type {Map<string, Set<"link" | "image">>} Referenced file to how pages use it. */
   const media = new Map();
   /** @type {Map<string, Set<string>>} Page to the files it references. */
   const mediaByPage = new Map();
   const unresolved = [];
+  const unlinked = [];
 
   function routeFor(page, variant = "stable") {
     const key = routeKey(page);
@@ -60,12 +67,23 @@ export function createSite({
     return key;
   }
 
-  function findPage(path, followRedirect = true) {
-    const key = routeKey(path.replace(/\/$/, ""));
+  function findPage(path, hops = 0) {
+    const key = routeKey(
+      posix
+        .normalize(path)
+        .replace(/\/$/, "")
+        .replace(/^\.\/?$/, "")
+    );
     const page = pageByKey.get(key) ?? pageByKey.get(key ? `${key}/index` : "index");
-    if (page || !followRedirect || !redirectByKey.has(key)) return page;
-    const learn = redirectByKey.get(key).match(LEARN_URL);
-    return learn ? findPage(safeDecode(learn[1]), false) : undefined;
+    if (page) return page;
+
+    // Upstream moves pages repeatedly, so redirect entries can chain.
+    const redirect = hops < MAX_REDIRECT_HOPS ? redirectByKey.get(key)?.match(LEARN_URL) : undefined;
+    if (redirect) return findPage(safeDecode(redirect[1]), hops + 1);
+
+    // Types removed from the current Script API are still documented in the 1.x version.
+    const scriptApi = key.match(SCRIPT_API_PAGE);
+    return scriptApi ? pageByKey.get(`priorscriptapi/minecraft/${scriptApi[1]}-1xx/${scriptApi[2]}`) : undefined;
   }
 
   function findFile(path) {
@@ -75,6 +93,7 @@ export function createSite({
   /**
    * @param {string} url
    * @param {{ from: string, variant?: string, kind?: "link" | "image" }} context
+   * @returns {string | null} null when a link fix removes the link.
    */
   function rewriteUrl(url, { from, variant = "stable", kind = "link" }) {
     if (!url || url.startsWith("#")) return url;
@@ -98,7 +117,23 @@ export function createSite({
       target = posix.normalize(posix.join(posix.dirname(from), safeDecode(parts.path).replace(/\\/g, "/")));
       query = parts.query;
       hash = parts.hash;
-      if (target.startsWith("..")) return url;
+      // Some upstream links climb out of the content folder and back in, like `../../creator/Reference/...`.
+      target = target.replace(/^(?:\.\.\/)+creator\//i, "");
+      if (target.startsWith("..")) {
+        unresolved.push({ from, url });
+        return url;
+      }
+    }
+
+    const fix = fixByKey.get(routeKey(target));
+    if (fix) {
+      if (fix.to === null) {
+        unlinked.push({ from, url });
+        return null;
+      }
+      const fixed = splitUrl(fix.to);
+      target = fixed.path;
+      hash = fixed.hash || hash;
     }
 
     const page = findPage(target);
@@ -134,5 +169,5 @@ export function createSite({
       .map(({ source, page }) => ({ source, destination: `/${routeFor(page)}` }));
   }
 
-  return { routeFor, rewriteUrl, readableIncludePath, findFile, redirects, media, mediaByPage, unresolved };
+  return { routeFor, rewriteUrl, readableIncludePath, findFile, redirects, media, mediaByPage, unresolved, unlinked };
 }

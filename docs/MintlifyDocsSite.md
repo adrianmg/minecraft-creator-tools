@@ -26,7 +26,16 @@ _Last revised: September 25, 2026_
 
 Routes are the lowercase source path without its extension, which matches the Learn URL path. For example, `Documents/GettingStarted.md` becomes `/documents/gettingstarted`. Keeping Learn's URL scheme means links convert one-to-one and needs no redirect table. Media paths are lowercased too, which fixes source references whose case differs from the file name.
 
-`tools/convert/site.mjs` resolves relative links, absolute Learn links (`https://learn.microsoft.com/.../minecraft/creator/...` and `/minecraft/creator/...`), and backslash paths, case-insensitively. Links to pages that upstream moved are resolved through `creator/.openpublishing.redirection.json`, and those entries also become Mintlify redirects. Other site-relative Learn links point to `https://learn.microsoft.com`. Links that can't be resolved are left unchanged and listed in `build-report.json`.
+`tools/convert/site.mjs` resolves relative links, absolute Learn links (`https://learn.microsoft.com/.../minecraft/creator/...` and `/minecraft/creator/...`), and backslash paths, case-insensitively. Other site-relative Learn links point to `https://learn.microsoft.com`.
+
+About 60 upstream links are broken on Learn too. These rules fix them:
+
+- Links to pages that upstream moved are resolved through `creator/.openpublishing.redirection.json`, following redirect chains. Those entries also become Mintlify redirects.
+- `/creator/...` is treated as a typo for `/minecraft/creator/...`, and paths that climb out of the content folder and back in (`../../creator/...`) are resolved inside it.
+- A Script API type that was removed from the current API resolves to its 1.x page, where it's still documented. Changelogs and update summaries link to many of these.
+- `config/link-fixes.json` maps the remaining broken targets to the correct page, or removes the link and keeps its text when there's no replacement. Each entry records the reason, so the file doubles as a list of upstream bugs.
+
+Links that still can't be resolved are left unchanged and listed in `build-report.json` under `unresolved`; removed links are listed under `unlinked`.
 
 ## Script API versions
 
@@ -69,5 +78,5 @@ Encoded files are cached in `.cache/media/` by source content, the exact encode 
 ## Known gaps
 
 - Images are lossless. Referenced media is about 156 MB, mostly lossless WebP screenshots; `EditorTutorial` still loads about 15 MB. Lossy WebP would cut much more (about 83% in a sample) but can soften UI text. Mintlify's CDN also optimizes images on deploy, but it doesn't document how.
-- About 60 links are broken upstream (moved or removed pages) and stay broken here.
+- Link fixes live here, not upstream. Sending `config/link-fixes.json` and the other rules upstream as pull requests to MicrosoftDocs/minecraft-creator would fix them on Learn too.
 - Navigation mirrors upstream TOC groups; duplicate TOC entries keep only their first placement.

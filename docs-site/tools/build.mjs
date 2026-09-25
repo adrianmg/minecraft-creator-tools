@@ -77,7 +77,14 @@ const videoByUrl = new Map(
 );
 const mediaPath = (file, kind) => outputPath(file, kind, mediaPlan);
 
-const site = createSite({ files, pages, experimentalOnly, redirections: readRedirections(), mediaPath });
+const site = createSite({
+  files,
+  pages,
+  experimentalOnly,
+  redirections: readRedirections(),
+  mediaPath,
+  linkFixes: readJson("config/link-fixes.json").fixes,
+});
 const pageSet = new Set(pages);
 
 // Navigation
@@ -215,8 +222,10 @@ const report = {
   pagesInNavigation: placed.size,
   media,
   unresolvedLinks: site.unresolved.length,
+  unlinkedLinks: site.unlinked.length,
   failures,
   unresolved: site.unresolved,
+  unlinked: site.unlinked,
 };
 writeFileSync(join(root, "build-report.json"), JSON.stringify(report, null, 2) + "\n");
 
@@ -228,7 +237,8 @@ console.log(
     `${mediaByKind.resize.files} images resized).`
 );
 console.log(
-  `Unresolved links: ${site.unresolved.length}. Conversion failures: ${failures.length}. Details: build-report.json`
+  `Unresolved links: ${site.unresolved.length}. Links removed by config/link-fixes.json: ${site.unlinked.length}. ` +
+    `Conversion failures: ${failures.length}. Details: build-report.json`
 );
 if (media.webpLargerThanSource.length) {
   console.warn(`Warning: ${media.webpLargerThanSource.length} WebP files are larger than their PNG sources.`);
