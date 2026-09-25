@@ -1,0 +1,112 @@
+---
+title: Build with your AI agent
+description: Connect Minecraft Creator Tools to your coding agent over MCP, then create, validate, and test Bedrock content by describing it.
+---
+
+Minecraft Creator Tools includes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server. Connect it to your coding agent, and the agent can create add-on projects, generate blocks, items, and entities, validate packs, design models and textures, and test the result in a running Minecraft world.
+
+<Steps>
+  <Step title="Install Minecraft Creator Tools">
+    Minecraft Creator Tools requires Node.js 22 or later.
+
+    ```bash
+    npm install -g @minecraft/creator-tools
+    ```
+
+  </Step>
+  <Step title="Accept the Minecraft EULA">
+    The MCP server doesn't start until you review and accept the Minecraft End User License Agreement.
+
+    ```bash
+    mct eula
+    ```
+
+  </Step>
+  <Step title="Connect your agent">
+    Add the `minecraft-creator-tools` server to your agent. The server runs locally with `mct mcp`.
+
+    <Tabs>
+      <Tab title="VS Code">
+        Create `.vscode/mcp.json` in your project folder:
+
+        ```json .vscode/mcp.json
+        {
+          "servers": {
+            "minecraft-creator-tools": {
+              "type": "stdio",
+              "command": "mct",
+              "args": ["mcp", "-i", "${workspaceFolder}"]
+            }
+          }
+        }
+        ```
+
+        To use the server in every project, run **MCP: Open User Configuration** from the Command Palette and add the same server without the `-i` argument.
+      </Tab>
+      <Tab title="GitHub Copilot CLI">
+        ```bash
+        copilot mcp add minecraft-creator-tools -- mct mcp
+        ```
+      </Tab>
+      <Tab title="Claude Code">
+        ```bash
+        claude mcp add minecraft-creator-tools -- mct mcp
+        ```
+      </Tab>
+      <Tab title="Cursor">
+        Create `.cursor/mcp.json` in your project folder:
+
+        ```json .cursor/mcp.json
+        {
+          "mcpServers": {
+            "minecraft-creator-tools": {
+              "command": "mct",
+              "args": ["mcp"]
+            }
+          }
+        }
+        ```
+      </Tab>
+    </Tabs>
+
+    Use `-i <folder>` to set the folder where the server writes content. Without it, the server uses the current folder.
+
+  </Step>
+  <Step title="Describe what you want to build">
+    Open your agent in the project folder and ask for content. For example:
+
+    <Prompt description="Create an add-on with a custom entity.">
+      Create a new Minecraft add-on project named goblin_chef. Add a custom goblin chef entity that wanders villages, drops emeralds when defeated, and spawns in plains biomes. Validate the project and fix any errors.
+    </Prompt>
+
+    <Prompt description="Design a model and a texture.">
+      Design a 3D model for a mushroom lamp block, and create a 16×16 pixel-art texture for a ruby item.
+    </Prompt>
+
+    The agent chooses the right [tools](/get-started/agent-tools) for each request.
+
+  </Step>
+  <Step title="Test it in Minecraft">
+    Ask the agent to start a test world with your content, or deploy it yourself:
+
+    ```bash
+    mct deploy mcuwp --test-world --launch
+    ```
+
+  </Step>
+</Steps>
+
+## Give your agent these docs
+
+Every page on this site has a menu to copy it as Markdown, open it in an AI assistant, or connect the site's search MCP server to VS Code or Cursor. With both servers connected, your agent can look up reference documentation while it builds.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="What your agent can do" icon="toolbox" href="/get-started/agent-tools">
+    The MCP tools for projects, content, validation, and live game sessions.
+  </Card>
+  <Card title="Use the mct CLI" icon="terminal" href="/get-started/mct-cli">
+    Run the same capabilities directly from your terminal.
+  </Card>
+</CardGroup>

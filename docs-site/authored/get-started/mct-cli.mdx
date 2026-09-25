@@ -1,0 +1,68 @@
+---
+title: Use the mct CLI
+description: Create, validate, deploy, and render Minecraft content from your terminal with Minecraft Creator Tools.
+---
+
+The same package that powers the [agent integration](/get-started/build-with-your-agent) is a command-line tool. It requires Node.js 22 or later.
+
+```bash
+npm install -g @minecraft/creator-tools
+mct
+```
+
+Run `mct` with no arguments to see the available commands, and add `--help` to any command for details. Most commands take the project folder with `-i`.
+
+## Common tasks
+
+<AccordionGroup>
+  <Accordion title="Create a project and add content">
+    ```bash
+    mct create
+    mct add entity -i ./my-addon
+    ```
+
+    `add` supports `entity`, `block`, `item`, `spawnLootRecipes`, `worldGen`, `visuals`, and `singleFiles`.
+  </Accordion>
+  <Accordion title="Validate a project">
+    ```bash
+    mct validate -i ./my-addon
+    mct validate addon -i ./my-addon -v
+    ```
+  </Accordion>
+  <Accordion title="Fix common problems">
+    ```bash
+    mct fix setnewestformatversions -i ./my-addon
+    mct fix latestbetascriptversion -i ./my-addon
+    ```
+  </Accordion>
+  <Accordion title="Test in Minecraft">
+    ```bash
+    mct deploy mcuwp -i ./my-addon --test-world --launch
+    ```
+
+    Use `mcpreview` instead of `mcuwp` to deploy to Minecraft Preview.
+  </Accordion>
+  <Accordion title="Package for distribution">
+    ```bash
+    mct exportaddon -i ./my-addon -o ./dist
+    ```
+  </Accordion>
+  <Accordion title="View or edit content in the browser">
+    ```bash
+    mct view -i ./my-addon
+    mct edit -i ./my-addon
+    ```
+  </Accordion>
+  <Accordion title="Render models, structures, and vanilla content">
+    ```bash
+    mct rendervanilla mob minecraft:creeper -o creeper.png
+    mct rendermodel mymodel.geo.json -i ./my-addon
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Learn more
+
+- [Minecraft Creator Tools overview](/documents/mctoolsoverview)
+- [Validation rules](/reference/content/mctoolsvalreference/validationrulesindex)
+- [Source code and issues](https://github.com/Mojang/minecraft-creator-tools)

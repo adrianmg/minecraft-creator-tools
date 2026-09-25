@@ -1,0 +1,59 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Minecraft Creator Docs",
+  "description": "Build add-ons, worlds, and experiences for Minecraft: Bedrock Edition.",
+  "colors": {
+    "primary": "#3C8527",
+    "light": "#6CC349",
+    "dark": "#2A641C"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Source docs",
+        "href": "https://github.com/MicrosoftDocs/minecraft-creator"
+      }
+    ],
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/Mojang/minecraft-creator-tools"
+    }
+  },
+  "navigation": {
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Vanilla samples",
+          "icon": "github",
+          "href": "https://github.com/Mojang/bedrock-samples"
+        },
+        {
+          "anchor": "Minecraft Creator Tools",
+          "icon": "toolbox",
+          "href": "https://github.com/Mojang/minecraft-creator-tools"
+        }
+      ]
+    }
+  },
+  "contextual": {
+    "options": ["copy", "view", "chatgpt", "claude", "mcp", "cursor", "vscode"]
+  },
+  "footer": {
+    "links": [
+      {
+        "header": "Source",
+        "items": [
+          {
+            "label": "Adapted from MicrosoftDocs/minecraft-creator",
+            "href": "https://github.com/MicrosoftDocs/minecraft-creator"
+          },
+          {
+            "label": "Content license: CC BY 4.0",
+            "href": "https://creativecommons.org/licenses/by/4.0/"
+          }
+        ]
+      }
+    ]
+  }
+}

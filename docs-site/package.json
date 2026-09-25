@@ -1,0 +1,31 @@
+{
+  "name": "minecraft-creator-docs-site",
+  "private": true,
+  "type": "module",
+  "description": "Builds a Mintlify version of the Minecraft: Bedrock Edition creator documentation from MicrosoftDocs/minecraft-creator.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "sync": "node tools/sync.mjs",
+    "build": "node tools/build.mjs",
+    "check": "node tools/check.mjs",
+    "dev": "cd site && mint dev",
+    "validate": "cd site && mint validate",
+    "broken-links": "cd site && mint broken-links",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@mdx-js/mdx": "^3.1.1",
+    "js-yaml": "^4.1.0",
+    "remark-gfm": "^4.0.1",
+    "remark-mdx": "^3.1.1",
+    "remark-parse": "^11.0.0",
+    "remark-stringify": "^11.0.0",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.0.0"
+  },
+  "devDependencies": {
+    "mint": "^4.2.900"
+  }
+}

@@ -1,0 +1,58 @@
+---
+title: What your agent can do
+description: The MCP tools that Minecraft Creator Tools gives your coding agent.
+---
+
+When you [connect your agent](/get-started/build-with-your-agent), it can call these tools. You don't call them directly; describe the outcome you want, and the agent picks the tools.
+
+## Projects and content
+
+| Tool | What it does |
+| --- | --- |
+| `createProject` | Creates the foundational files for a new Minecraft project. |
+| `addItem` | Adds files for Minecraft items to a project. |
+| `createMinecraftContent` | Creates a complete behavior pack and resource pack from one simplified schema: entities, blocks, items, loot tables, recipes, spawn rules, features, and structures. |
+| `getEffectiveContentSchema` | Analyzes an existing project and describes it in the same simplified schema, so the agent can understand or extend it. |
+
+## Validation
+
+| Tool | What it does |
+| --- | --- |
+| `validateContent` | Validates JSON files or a zipped pack and returns the results. |
+| `validateFile` | Validates the content at a file path. |
+
+## Models, structures, and textures
+
+| Tool | What it does |
+| --- | --- |
+| `designModel` | Designs a 3D model and saves its geometry (`.geo.json`) and texture (`.png`) to the project. |
+| `getModelTemplates` | Returns starter models for common entity types, at Minecraft scale with pixel-art textures. |
+| `designStructure` | Designs a structure and saves it as an `.mcstructure` file. |
+| `writeImageFileFromPixelArt` | Creates a PNG texture from ASCII pixel art and a color palette. |
+| `writeImageFileFromSvg` | Converts SVG markup to a PNG texture. |
+| `writeImageFile` | Writes base64-encoded image data to a PNG file. |
+
+<Note>
+  The image tools only write inside folders that allow it. Add `.mct/mcp/prefs.json` to your project folder:
+
+  ```json .mct/mcp/prefs.json
+  {
+    "allowImageFileWritesInDescendentFolders": true
+  }
+  ```
+</Note>
+
+## Live game sessions
+
+These tools run your content in a Bedrock Dedicated Server session so the agent can test gameplay.
+
+| Tool | What it does |
+| --- | --- |
+| `createMinecraftSessionWithContent` | Starts a new Minecraft session with your content. |
+| `listMinecraftSessions` | Lists active sessions with their slot, port, and status. |
+| `connectToMinecraftSession` | Registers an existing Bedrock Dedicated Server slot as a named session. |
+| `runCommandInMinecraft` | Runs a command in a session. |
+| `runActionSetInMinecraft` | Runs a set of actions in a session and returns the resulting state. |
+| `moveSessionPlayerToLocation` | Moves a player to X, Y, Z coordinates in a session. |
+
+The server also exposes a `worldSession://{name}` resource with the status of each session.

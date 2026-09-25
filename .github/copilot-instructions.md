@@ -37,6 +37,7 @@ Note: most project work is in the `app` folder.
 - `app/site/`: Folder with modifications to index.html when hosted on mctools.dev (adds cookie and analytics scripts)
 - `app/reslist/`: Contains JSON metadata for how to include additional resources into MCTools at build time
 - Code within `app/public/data/forms` and `app/src/minecraft/json` is generated from the `app/src/minecraft/` folder. Do not edit or comment on files in these directories directly.
+- `docs-site/`: Standalone package that converts the MicrosoftDocs/minecraft-creator docs into a Mintlify site. Run `npm ci && npm run sync && npm run build` in `docs-site/`, then `npm test` and `npm run check`. Generated output (`docs-site/site/`) and the upstream checkout (`docs-site/.source/`) are git-ignored. See `docs/MintlifyDocsSite.md`.
 
 ## Testing Strategy
 

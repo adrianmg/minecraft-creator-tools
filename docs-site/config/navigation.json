@@ -1,0 +1,83 @@
+{
+  "tocRoot": ["Minecraft: Bedrock Documentation"],
+  "tabs": [
+    {
+      "tab": "Get started",
+      "icon": "rocket",
+      "groups": [
+        {
+          "group": "Get started",
+          "pages": ["get-started/build-with-your-agent", "get-started/agent-tools", "get-started/mct-cli"]
+        },
+        { "toc": ["Learning Journey"] },
+        { "toc": ["Concepts"] },
+        { "toc": ["Contribute"] }
+      ]
+    },
+    {
+      "tab": "Guides",
+      "icon": "book-open",
+      "groups": [
+        { "toc": ["Blocks"] },
+        { "toc": ["Items and Recipes"] },
+        { "toc": ["Entities and Particles"] },
+        { "toc": ["Worlds and Cameras"] },
+        { "toc": ["Rendering and Vibrant Visuals"] },
+        { "toc": ["Assets and Sound"] },
+        { "toc": ["Game Logic"], "exclude": ["Scripting"] },
+        { "toc": ["Best Practices & Tips"] }
+      ]
+    },
+    {
+      "tab": "Reference",
+      "icon": "brackets-curly",
+      "groups": [
+        {
+          "toc": ["Reference Documentation"],
+          "flatten": true,
+          "group": "Overview",
+          "exclude": ["Script APIs", "Prior Versions of Script APIs"]
+        }
+      ]
+    },
+    {
+      "tab": "Script API",
+      "icon": "code",
+      "versions": [
+        {
+          "version": "Stable",
+          "groups": [
+            { "toc": ["Game Logic", "Scripting"], "group": "Scripting guides" },
+            { "toc": ["Reference Documentation", "Script APIs"], "flatten": true, "group": "Script APIs" }
+          ]
+        },
+        {
+          "version": "Beta",
+          "tag": "Experimental",
+          "variant": "beta",
+          "groups": [{ "toc": ["Reference Documentation", "Script APIs"], "flatten": true, "group": "Script APIs" }]
+        },
+        {
+          "version": "1.x",
+          "groups": [
+            {
+              "toc": ["Reference Documentation", "Prior Versions of Script APIs"],
+              "flatten": true,
+              "group": "Prior versions"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tab": "Tools",
+      "icon": "wrench",
+      "groups": [{ "toc": ["Tools and Libraries"], "flatten": true, "group": "Tools" }]
+    },
+    {
+      "tab": "What's new",
+      "icon": "sparkles",
+      "groups": [{ "toc": ["Updates and News"], "flatten": true, "group": "Update summaries" }]
+    }
+  ]
+}
